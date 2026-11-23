@@ -1,0 +1,20 @@
+[package]
+name = "halcyon-rs"
+version = "0.0.0"
+edition = "2024"
+description = "Official Halcyon UI framework package; public source release in preparation."
+license = "MIT"
+repository = "https://github.com/halcyon-framework/halcyon"
+readme = "README.md"
+publish = ["crates-io"]
+include = ["Cargo.toml", "README.md", "LICENSE", "src/lib.rs"]
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[lib]
+name = "halcyon"
+path = "src/lib.rs"
+
+[workspace]
