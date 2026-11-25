@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halcyon — Local browser probe</title>
+<style>
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+canvas { display: block; width: 100vw !important; height: 100vh !important; }
+#boot-error { position: fixed; bottom: 0; left: 0; right: 0; max-height: 30vh; z-index: 1; margin: 0; overflow: auto; white-space: pre-wrap; padding: 12px; background: #fff; color: #900; pointer-events: none; }
+</style>
+<body>
+<pre id="boot-error" hidden></pre>
+<script type="module">
+const failure = error => {
+    const output = document.getElementById('boot-error');
+    output.hidden = false;
+    const message = String(error?.stack ?? error);
+    output.textContent = output.textContent ? output.textContent + '\n' + message : message;
+    console.error(error);
+};
+addEventListener('unhandledrejection', event => failure(event.reason));
+addEventListener('error', event => failure(event.error ?? event.message));
+try {
+    if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
+    const { default: init } = await import('./halcyon_probe.js');
+    await init();
+} catch (error) {
+    failure(error);
+}
+</script>
+</body>
+</html>

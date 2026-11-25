@@ -1,20 +1,115 @@
 [package]
-name = "halcyon-rs"
-version = "0.0.0"
+name = "halcyon"
+version = "0.270.3-beta"
 edition = "2024"
-description = "Official Halcyon UI framework package; public source release in preparation."
 license = "MIT"
+description = "GPU-first retained-mode UI framework for Rust."
 repository = "https://github.com/halcyon-framework/halcyon"
 readme = "README.md"
-publish = ["crates-io"]
-include = ["Cargo.toml", "README.md", "LICENSE", "src/lib.rs"]
-autobins = false
-autoexamples = false
-autotests = false
-autobenches = false
 
-[lib]
-name = "halcyon"
-path = "src/lib.rs"
+[features]
+default = []
+test-harness = []           # Enables test-only APIs for widget testing
+trace-listview = []         # Enables ListView/TabularSubstrate hit-test tracing
+render-audit = []           # Enables owner-local render cadence counters
 
-[workspace]
+[dependencies]
+winit = "0.30.12"
+wgpu = { version = "=30.0.2", features = ["naga-ir"] }
+naga = { version = "=30.0.2", features = ["wgsl-in", "wgsl-out"] }
+bytemuck = { version = "1.24.0", features = ["derive"] }
+glam = "0.30.10"
+pollster = "0.4.0"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+ttf-parser = "0.25"
+rustybuzz = "0.20"
+unicode-segmentation = "=1.12.0"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bitflags = "2.9"
+crossbeam-channel = "0.5"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+web-time = "=1.1.0"
+pulldown-cmark = { version = "=0.13.6", default-features = false }
+
+[target.'cfg(all(not(target_os = "ios"), not(target_arch = "wasm32")))'.dependencies]
+arboard = "3.4"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = ["NSObject", "NSString", "NSThread"] }
+objc2-ui-kit = { version = "0.2.2", features = ["NSAttributedString", "UIBarButtonItem", "UIBarItem", "UIColor", "UINavigationController", "UINavigationItem", "UIPasteboard", "UIPickerView", "UIView", "UIViewController", "UIWindow", "block2"] }
+
+# WASM-only: glyphon for swash-based rasterization (fallback)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+glyphon = "=0.12.0"
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "=0.4.77"
+js-sys = "=0.3.104"
+web-sys = { version = "=0.3.104", features = ["console", "Window", "Document", "Element", "ClipboardEvent", "DataTransfer", "HtmlCanvasElement", "CssStyleDeclaration", "HtmlInputElement", "HtmlTextAreaElement", "HtmlSelectElement", "HtmlOptionElement", "InputEvent", "CompositionEvent", "KeyboardEvent", "PointerEvent", "VisualViewport", "DomRect", "FocusOptions", "Navigator", "Performance", "Crypto", "History", "Location", "PopStateEvent"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wgpu = { version = "=30.0.2", features = ["fragile-send-sync-non-atomic-wasm"] }
+
+[patch.crates-io]
+winit = { path = "vendor/winit-0.30.12" }
+wgpu-hal = { path = "vendor/wgpu-hal-30.0.2" }
+
+[target.'cfg(windows)'.dependencies]
+dwrote = "0.11.5"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+core-text = "21.0.0"
+core-foundation = "0.10"
+core-graphics = "0.24"
+foreign-types = "0.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = ["NSObject", "NSString", "NSThread"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSEvent", "NSCell", "NSText", "NSResponder", "NSView", "NSWindow"] }
+
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios")), not(target_arch = "wasm32")))'.dependencies]
+freetype-rs = "0.38.0"
+
+[[test]]
+name = "app_frame_realization_native"
+path = "tests/app_frame_realization_native.rs"
+harness = false
+
+[[example]]
+name = "web_local_probe"
+path = "examples/web_local_probe.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "web_showcase"
+path = "examples/web_showcase.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "web_touch_input"
+path = "examples/web_touch_input.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "web_grouped_combo_box"
+path = "examples/web_grouped_combo_box.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "web_navigation_history"
+path = "examples/web_navigation_history.rs"
+crate-type = ["cdylib"]
+
+# Native integration fixtures use process/system APIs and the test harness.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+halcyon = { path = ".", features = ["test-harness"] }
+rand = "0.8"
+sysinfo = "0.33"
+
+[profile.dev]
+opt-level = 1

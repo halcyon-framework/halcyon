@@ -1,0 +1,12 @@
+{
+  "project": "../..",
+  "halcyon": ".",
+  "package": "halcyon",
+  "example": "web_touch_input",
+  "out_name": "halcyon_touch_input",
+  "html": "examples/web_touch_input/index.html",
+  "output": "target/web-dev-touch-input",
+  "watch": ["examples/touch_input.rs", "examples/web_touch_input.rs"],
+  "assets": [],
+  "port": 8794
+}

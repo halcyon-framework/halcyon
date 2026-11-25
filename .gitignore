@@ -126,6 +126,8 @@ id_dsa*
 *.sqlite3
 *.sqlite-wal
 *.sqlite-shm
+*.patch
+*.diff
 *.receipt.json
 receipt.json
 *.terminal.json

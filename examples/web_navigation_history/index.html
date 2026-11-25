@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halcyon Web Navigation</title>
+<style>
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+canvas { display: block; width: 100vw !important; height: 100vh !important; }
+</style>
+<body>
+<pre id="boot-error" hidden></pre>
+<script type="module">
+try {
+    if (!navigator.gpu) throw new Error("WebGPU is unavailable.");
+    const { default: init } = await import("/halcyon_history.js");
+    await init();
+} catch (error) {
+    const output = document.getElementById("boot-error");
+    output.textContent = String(error?.stack ?? error);
+    output.hidden = false;
+    console.error(error);
+}
+</script>
+</body>
+</html>
