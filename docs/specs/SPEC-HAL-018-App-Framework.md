@@ -547,6 +547,88 @@ existing complete/incomplete-text two-surface cases. These observations establis
 the tested first-visible client content and ordering; they do not measure display
 scanout or certify other platforms.
 
+### 16.1 macOS native startup presentation — Binding Addition (2026-11-25)
+
+**Status: Accepted / Binding.** The maintainer accepted the visible native
+startup presentation after the bounded macOS trial. This addition supersedes
+only the macOS visibility and initial drawable-availability requirements of
+section 16. All remaining startup, renderer, and application contracts retain
+their existing authority.
+
+On macOS, replace the hidden-until-ready reveal guarantee in section 16
+with the following scoped guarantee. Create the same primary native
+window hidden, using its existing attributes, and install a passive,
+GPU-independent native client presentation before showing it. Use the
+initial App theme's root background and ordinary text color with one
+centered static "Loading…" label. The native presentation fills the
+client area and follows ordinary native resize. Show that same window;
+do not wait for its first Halcyon drawable to reveal it.
+
+Use the ordinary attached wgpu window surface. No additional window,
+custom Metal presentation layer, alternate renderer, startup resource
+pipeline, animation, progress estimate, or separate event loop is
+admitted. The native presentation is private main-thread transport,
+not a widget tree or another input authority. During preparation,
+preserve native lifecycle, close/quit and geometry handling; do not
+deliver application actions to content that is still concealed.
+
+Retain the existing startup readiness and lower-modal settlement rules,
+canonical frame body, resource admission, Build/Compile/Execute and
+actual output custody. The existing startup-completion latch is
+distinct from native visibility: visible loading is still startup.
+Normal pending preparation may proceed behind the native presentation.
+A qualifying primary output must still be prepared from the ready
+scene and submitted with GPU completion before the existing Present
+call. Keep the native presentation until that call succeeds; then
+retire it once and complete startup. Do not report a skipped or
+unsubmitted output as presented. Producer, preparation and other
+startup errors retain their existing failure semantics.
+
+An actual `RendererSurfaceError::Occluded` at acquisition of the
+qualifying primary target is temporary unavailability, not fatal macOS startup
+failure. Preserve that exact attempt-local
+evidence from the existing renderer acquisition boundary, without
+changing the public render API or adding global/persistent renderer
+state. No output for another reason is not evidence of occlusion.
+Leave the loading presentation and startup obligation pending. An
+ordinary native `Occluded(false)` event wakes the existing frame
+admission path; subsequent resource and geometry events retain their
+existing owners. Do not introduce polling, sleep, retry timers, spin,
+extra forced frame loops, synthetic input, or visibility spoofing.
+
+Visible App children and existing low-level visible-window clients
+may have no drawable on their initial acquisition. Keep existing
+creation, registration, focus and signal semantics. Their actual
+first output must be produced through the normal admitted frame after
+native availability returns, not through a separate rendering route.
+An ordinary unocclusion event requests the corresponding existing
+redraw; document the temporary output absence for low-level callers.
+Do not require first-attempt output regardless of actual availability.
+Preserve per-target independence, ordinary subsequent rendering and
+the existing handling of all other surface errors. No general public
+surface-custody redesign is admitted.
+
+All other platforms retain section 16. Use published wgpu/wgpu-hal 30.0.2;
+retain the existing winit patch and qualified Windows dependency alignment.
+No new dependency family or backend fork is required. This startup qualification
+does not itself qualify a registry publication.
+
+Implementation qualification: the macOS windowed and fullscreen native startup
+probes observed the loading presentation during queued Image admission, real
+primary GPU completion and Present, one native view removal, and subsequent
+ordinary output. Windowed capture showed the ready image; fullscreen capture
+showed the same ready scene after the next ordinary frame, before requesting a
+distinct successor scene. These observations do not establish first-texture
+fullscreen scanout or an absence of a transient visual gap. Both two-surface
+native receipt modes preserved Complete/Degraded(MissingGlyph)/Complete text
+realization and recovered an initially unavailable child after native
+unocclusion. A low-level two-window probe also observed actual unocclusion and
+subsequent output from both initially unavailable surfaces. The canonical App
+primary was available before acquisition in these runs; its primary Occluded
+deferral branch has not been exercised at native runtime. Native checks, five
+focused startup tests, and the WASM library check passed. Windows native
+runtime has not been requalified for this dependency selection.
+
 # 17. App-local UI Scale — Accepted Scoped Addition (2026-10-16)
 
 **Author:** JC. **Status:** Accepted / Binding; implementation proof pending.

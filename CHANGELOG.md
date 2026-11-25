@@ -2,6 +2,13 @@
 
 All notable changes to the Halcyon UI framework.
 
+## [0.271.2-beta] — 2026-11-25
+
+- **macOS App startup** — Show a theme-matched native “Loading…” view in the App window while required content is pending. Remove it after GPU completion and the first ready primary frame’s Present call.
+- **macOS drawable availability** — An initial primary acquisition that reports `Occluded` leaves startup pending. Native unocclusion wakes ordinary rendering for primary and child windows.
+- **Dependency setup** — Remove the `wgpu-hal` override and use the published 30.0.2 release. Retain the `winit` patch and pin `windows` to 0.62.0 for DX12 dependency alignment.
+- **Verification** — macOS windowed and fullscreen startup, App child and low-level unocclusion recovery, focused startup tests, and a WASM library check passed. The canonical primary `Occluded` deferral and Windows native runtime remain unverified. Fullscreen capture showed the ready scene after the next ordinary frame. Attribution to the first texture and physical scanout remain unmeasured.
+
 ## [0.271.1-beta] — 2026-11-25
 
 - **Window focus loss** — Deliver hover leave to the current widget before clearing the losing window's interaction state. Returning focus restores keyboard focus through the existing lifecycle, and a fresh pointer event establishes hover.

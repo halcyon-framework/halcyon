@@ -553,10 +553,13 @@ impl WgpuRenderer {
         plan: MultiTargetDrawPlan,
         custody: SdfSceneCustody,
         companions: CompiledHudFrame,
+        #[cfg(target_os = "macos")] watch_occlusion: Option<(SurfaceId, &mut bool)>,
     ) -> Result<Vec<SdfRenderOutput>, SdfFrameCustodyError> {
         self.render_sdf_frame_outputs(
             plan,
             custody,
+            #[cfg(target_os = "macos")]
+            watch_occlusion,
             |renderer, compiled, descriptor, view| {
                 companions.encode(renderer, compiled, descriptor, view)
             },

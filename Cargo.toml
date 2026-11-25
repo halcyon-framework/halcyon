@@ -1,6 +1,6 @@
 [package]
 name = "halcyon"
-version = "0.271.1-beta"
+version = "0.271.2-beta"
 edition = "2024"
 license = "MIT"
 description = "GPU-first retained-mode UI framework for Rust."
@@ -57,10 +57,10 @@ wgpu = { version = "=30.0.2", features = ["fragile-send-sync-non-atomic-wasm"] }
 
 [patch.crates-io]
 winit = { path = "vendor/winit-0.30.12" }
-wgpu-hal = { path = "vendor/wgpu-hal-30.0.2" }
 
 [target.'cfg(windows)'.dependencies]
 dwrote = "0.11.5"
+windows = { version = "=0.62.0", default-features = false }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 core-text = "21.0.0"
@@ -71,7 +71,7 @@ foreign-types = "0.5"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5.2"
 objc2-foundation = { version = "0.2.2", features = ["NSObject", "NSString", "NSThread"] }
-objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSEvent", "NSCell", "NSText", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSEvent", "NSCell", "NSColor", "NSControl", "NSGraphics", "NSText", "NSTextField", "NSResponder", "NSView", "NSWindow"] }
 
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios")), not(target_arch = "wasm32")))'.dependencies]
 freetype-rs = "0.38.0"

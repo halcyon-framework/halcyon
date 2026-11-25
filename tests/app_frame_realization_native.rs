@@ -67,6 +67,55 @@ fn owned_native_window(title: &str) -> objc2::rc::Retained<objc2_app_kit::NSWind
     window
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Default)]
+struct NativeUnocclusionEvents(Arc<Mutex<std::collections::HashMap<u64, u64>>>);
+
+#[cfg(target_os = "macos")]
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for NativeUnocclusionEvents {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if event.metadata().target() != "halcyon::native_startup" {
+            return;
+        }
+        #[derive(Default)]
+        struct Fields {
+            surface: Option<u64>,
+            after_attempt: Option<u64>,
+        }
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                match field.name() {
+                    "surface" => self.surface = Some(value),
+                    "after_attempt" => self.after_attempt = Some(value),
+                    _ => {}
+                }
+            }
+        }
+        let mut fields = Fields::default();
+        event.record(&mut fields);
+        if let (Some(surface), Some(after_attempt)) = (fields.surface, fields.after_attempt) {
+            self.0.lock().unwrap().insert(surface, after_attempt);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn observe_native_startup() -> NativeUnocclusionEvents {
+    use tracing_subscriber::{Layer, filter::Targets, prelude::*};
+
+    let events = NativeUnocclusionEvents::default();
+    let filter = Targets::new()
+        .with_default(tracing::Level::WARN)
+        .with_target("halcyon::native_startup", tracing::Level::DEBUG);
+    tracing_subscriber::registry()
+        .with(events.clone())
+        .with(tracing_subscriber::fmt::layer().with_filter(filter))
+        .init();
+    events
+}
+
 #[cfg(all(target_os = "macos", feature = "test-harness"))]
 fn resize_native_proof_window(title: &str, width: f32, height: f32) {
     owned_native_window(title)
@@ -251,6 +300,10 @@ struct ProbeScreen {
     first: Option<Arc<AppFrameRealization>>,
     started: Instant,
     scale_proof: bool,
+    #[cfg(target_os = "macos")]
+    native_unocclusion: NativeUnocclusionEvents,
+    #[cfg(target_os = "macos")]
+    initially_unavailable: std::collections::HashMap<u64, u64>,
     #[cfg(windows)]
     inactive: Option<(AppFrameAttemptId, u64)>,
 }
@@ -334,6 +387,35 @@ impl Screen for ProbeScreen {
                 .outcome()
                 .is_complete()
         );
+        #[cfg(target_os = "macos")]
+        if self.stage == 0 {
+            assert_eq!(receipt.attempt_id(), attempt);
+            assert_eq!(candidate, 0);
+            assert!(main.text_realization().unwrap().outcome().is_complete());
+            let mut missing_output = false;
+            for surface in [main, secondary] {
+                assert_eq!(surface.submitted(), surface.output_produced());
+                assert_eq!(surface.presented_called(), surface.output_produced());
+                if !surface.output_produced() {
+                    missing_output = true;
+                    let id = surface.surface_id();
+                    let entry = self.initially_unavailable.entry(id.raw());
+                    if let std::collections::hash_map::Entry::Vacant(entry) = entry {
+                        entry.insert(attempt.sequence());
+                        println!("native startup target unavailable: {id:?} attempt={}", attempt.sequence());
+                    }
+                }
+            }
+            if missing_output {
+                return;
+            }
+            let events = self.native_unocclusion.0.lock().unwrap();
+            for (surface, skipped) in self.initially_unavailable.drain() {
+                let event_after = events[&surface];
+                assert!(event_after >= skipped && event_after < attempt.sequence());
+                println!("native startup target recovered: surface={surface} skipped_attempt={skipped} unoccluded_after={event_after} submitted_attempt={}", attempt.sequence());
+            }
+        }
         assert!(
             secondary.output_produced() && secondary.submitted() && secondary.presented_called()
         );
@@ -516,16 +598,18 @@ impl Screen for ProbeScreen {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod startup_native_proof {
     use super::*;
     use halcyon::renderer::image_binding::{
         ImageBinding, ImageBindingIdentity, ImageBindingRequest,
     };
+    #[cfg(windows)]
     use std::ffi::c_void;
 
     const IMAGE: u64 = 263_361_990;
 
+    #[cfg(windows)]
     #[link(name = "user32")]
     unsafe extern "system" {
         fn FindWindowW(class_name: *const u16, window_name: *const u16) -> *mut c_void;
@@ -537,16 +621,19 @@ mod startup_native_proof {
         fn ReleaseDC(window: *mut c_void, dc: *mut c_void) -> i32;
     }
 
+    #[cfg(windows)]
     #[link(name = "gdi32")]
     unsafe extern "system" {
         fn GetPixel(dc: *mut c_void, x: i32, y: i32) -> u32;
     }
 
+    #[cfg(windows)]
     #[link(name = "dwmapi")]
     unsafe extern "system" {
         fn DwmFlush() -> i32;
     }
 
+    #[cfg(windows)]
     #[repr(C)]
     #[derive(Default)]
     struct ClientRect {
@@ -556,6 +643,7 @@ mod startup_native_proof {
         bottom: i32,
     }
 
+    #[cfg(windows)]
     fn primary_window(title: &str) -> *mut c_void {
         let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
         let window = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
@@ -563,11 +651,13 @@ mod startup_native_proof {
         window
     }
 
+    #[cfg(windows)]
     fn primary_window_visible(title: &str) -> bool {
         let window = primary_window(title);
         unsafe { IsWindowVisible(window) != 0 }
     }
 
+    #[cfg(windows)]
     pub(super) fn set_primary_minimized(title: &str, minimized: bool) {
         const SW_MINIMIZE: i32 = 6;
         const SW_RESTORE: i32 = 9;
@@ -578,6 +668,7 @@ mod startup_native_proof {
         assert_eq!(unsafe { IsIconic(window) != 0 }, minimized);
     }
 
+    #[cfg(windows)]
     fn assert_first_visible_pixels(title: &str) {
         let window = primary_window(title);
         assert!(unsafe { IsWindowVisible(window) != 0 });
@@ -622,12 +713,77 @@ mod startup_native_proof {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn loading_view(window: &objc2_app_kit::NSWindow) -> Option<objc2::rc::Retained<objc2_app_kit::NSView>> {
+        use objc2::runtime::AnyClass;
+        use objc2_foundation::NSObjectProtocol;
+
+        let class = AnyClass::get("HalcyonStartupView").expect("native startup view class");
+        let client = window.contentView().unwrap();
+        // This observes the live main-thread AppKit view, whose children are NSViews.
+        unsafe { client.subviews() }.iter_retained().find(|view| view.isKindOfClass(class))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_loading_view(window: &objc2_app_kit::NSWindow) {
+        use objc2::{ClassType, rc::Retained};
+        use objc2_app_kit::NSTextField;
+        use objc2_foundation::NSObjectProtocol;
+
+        assert!(window.isVisible());
+        let client = window.contentView().unwrap();
+        let loading = loading_view(window).expect("loading view on the actual primary client");
+        assert_eq!(loading.frame(), client.bounds());
+        // The live loading view is a main-thread NSView with a native label.
+        let subviews = unsafe { loading.subviews() };
+        let mut labels = subviews.iter_retained();
+        let label = labels.next().expect("one native startup label");
+        assert!(labels.next().is_none());
+        assert!(label.isKindOfClass(NSTextField::class()));
+        // The class check establishes this live view's NSTextField type.
+        let label = unsafe { Retained::cast::<NSTextField>(label) };
+        assert_eq!(unsafe { label.stringValue() }.to_string(), "Loading…");
+        let frame = label.frame();
+        let bounds = loading.bounds();
+        assert!((frame.origin.x * 2.0 + frame.size.width - bounds.size.width).abs() <= 1.0);
+        assert!((frame.origin.y * 2.0 + frame.size.height - bounds.size.height).abs() <= 1.0);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn capture(window: &objc2_app_kit::NSWindow, fullscreen: bool, stage: &str) {
+        let dir = std::path::Path::new("target/app-frame-realization-startup");
+        std::fs::create_dir_all(dir).expect("startup proof output directory");
+        let mode = if fullscreen { "fullscreen" } else { "windowed" };
+        let path = dir.join(format!("placeholder-{mode}-{stage}.png"));
+        let number = unsafe { window.windowNumber() }.to_string();
+        assert!(
+            std::process::Command::new("/usr/sbin/screencapture")
+                .args(["-x", "-o", "-t", "png", "-l", &number])
+                .arg(&path)
+                .status()
+                .expect("capture the owned native window")
+                .success()
+        );
+        let view = window.contentView().unwrap();
+        let backing = unsafe { view.convertSizeToBacking(view.bounds().size) };
+        println!("native startup {stage}: capture={} client_width={} client_height={}",
+            path.display(), backing.width.round(), backing.height.round());
+    }
+
     #[derive(Default)]
     struct StartupState {
         binding: Option<ImageBinding>,
         painted_binding: Option<ImageBindingIdentity>,
-        entered_hidden: bool,
+        entered_startup: bool,
         pending_flushes: usize,
+        #[cfg(target_os = "macos")]
+        captured_loading: bool,
+        #[cfg(target_os = "macos")]
+        ready_attempt: Option<AppFrameAttemptId>,
+        #[cfg(target_os = "macos")]
+        successor_requested: bool,
+        #[cfg(target_os = "macos")]
+        successor_painted: bool,
         done: bool,
     }
 
@@ -666,8 +822,14 @@ mod startup_native_proof {
         }
 
         fn paint(&self, cx: &mut PaintContext, rect: RectF, _: &[NodeId]) {
-            cx.scene.push_rect(rect, Color::BLACK, 0, None);
             let mut state = self.state.lock().unwrap();
+            #[cfg(target_os = "macos")]
+            if state.successor_requested {
+                cx.scene.push_rect(rect, Color::from_hex(0x2288CC), 0, None);
+                state.successor_painted = true;
+                return;
+            }
+            cx.scene.push_rect(rect, Color::BLACK, 0, None);
             if let Some(binding) = state.binding.as_ref() {
                 binding
                     .availability()
@@ -705,12 +867,15 @@ mod startup_native_proof {
 
     impl Screen for StartupScreen {
         fn on_enter(&mut self, cx: &mut ScreenContext<'_>) {
+            #[cfg(windows)]
             assert!(
                 !primary_window_visible(&self.title),
                 "on_enter must run hidden"
             );
+            #[cfg(target_os = "macos")]
+            assert_loading_view(&owned_native_window(&self.title));
             assert!(self.observer.latest().is_none());
-            self.state.lock().unwrap().entered_hidden = true;
+            self.state.lock().unwrap().entered_startup = true;
             self.request = Some(
                 cx.app
                     .gpu_resources()
@@ -753,10 +918,22 @@ mod startup_native_proof {
                 return;
             }
             if state.binding.is_none() {
+                #[cfg(windows)]
                 assert!(
                     !primary_window_visible(&self.title),
                     "primary window became visible before ordinary image admission settled"
                 );
+                #[cfg(target_os = "macos")]
+                {
+                    let window = owned_native_window(&self.title);
+                    assert_loading_view(&window);
+                    if !state.captured_loading
+                        && window.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible)
+                    {
+                        capture(&window, self.fullscreen, "loading");
+                        state.captured_loading = true;
+                    }
+                }
                 match self
                     .request
                     .as_ref()
@@ -787,6 +964,7 @@ mod startup_native_proof {
                 }
             }
 
+            #[cfg(windows)]
             assert!(
                 primary_window_visible(&self.title),
                 "the completed ready frame must reveal the actual primary HWND"
@@ -803,13 +981,41 @@ mod startup_native_proof {
                     .latest()
                     .unwrap(),
             ));
-            assert_eq!(receipt.compile_outcome(), &AppFrameCompileOutcome::Compiled);
             assert_eq!(
                 receipt.surfaces().len(),
                 1,
                 "startup proof owns only the primary surface"
             );
             let primary = &receipt.surfaces()[0];
+            #[cfg(target_os = "macos")]
+            let window = owned_native_window(&self.title);
+            #[cfg(target_os = "macos")]
+            if loading_view(&window).is_some() {
+                assert_loading_view(&window);
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(ready) = state.ready_attempt.filter(|_| !state.successor_requested) {
+                if receipt.attempt_id() == ready {
+                    return;
+                }
+                assert!(receipt.attempt_id().sequence() > ready.sequence());
+                if primary.output_produced() {
+                    assert!(primary.text_realization().unwrap().outcome().is_complete());
+                }
+                assert_eq!(primary.submitted(), primary.output_produced());
+                assert_eq!(primary.presented_called(), primary.output_produced());
+                capture(&window, self.fullscreen, "ready-before-successor");
+                println!(
+                    "native startup ready retained: attempt={} unchanged_attempt={} output={} submit={} present_called={}",
+                    ready.sequence(), receipt.attempt_id().sequence(),
+                    primary.output_produced(), primary.submitted(), primary.presented_called(),
+                );
+                state.successor_requested = true;
+                cx.tree.as_deref_mut().unwrap().mark_paint_dirty(self.node.unwrap());
+                return;
+            }
+            assert_eq!(receipt.compile_outcome(), &AppFrameCompileOutcome::Compiled);
             assert!(primary.text_realization().unwrap().outcome().is_complete());
             assert!(primary.output_produced());
             assert!(primary.submitted());
@@ -819,6 +1025,7 @@ mod startup_native_proof {
                 Some(state.binding.as_ref().unwrap().identity()),
                 "ready frame must paint the exact admitted image binding",
             );
+            #[cfg(windows)]
             assert_first_visible_pixels(&self.title);
             println!(
                 "app_frame_realization_startup_native: fullscreen={} pending_flushes={} attempt={} primary_visible=true primary_output=true submitted=true present_called=true",
@@ -826,20 +1033,52 @@ mod startup_native_proof {
                 state.pending_flushes,
                 receipt.attempt_id().sequence(),
             );
+            #[cfg(target_os = "macos")]
+            {
+                assert!(window.isVisible());
+                assert_eq!(window.styleMask().contains(objc2_app_kit::NSWindowStyleMask::FullScreen), self.fullscreen);
+                assert!(state.captured_loading, "observed visible loading while the required image was pending");
+                if let Some(ready) = state.ready_attempt {
+                    if receipt.attempt_id() == ready {
+                        return;
+                    }
+                    assert!(receipt.attempt_id().sequence() > ready.sequence());
+                    assert!(state.successor_painted);
+                    if self.fullscreen {
+                        capture(&window, self.fullscreen, "successor");
+                    }
+                    println!("native startup successor: attempt={} output=true submit=true present_called=true loading=false",
+                        receipt.attempt_id().sequence());
+                } else {
+                    state.ready_attempt = Some(receipt.attempt_id());
+                    // Observe the fullscreen ready content on the next ordinary App
+                    // iteration before requesting the successor paint.
+                    if !self.fullscreen {
+                        capture(&window, self.fullscreen, "ready");
+                        state.successor_requested = true;
+                        cx.tree.as_deref_mut().unwrap().mark_paint_dirty(self.node.unwrap());
+                    }
+                    return;
+                }
+            }
             state.done = true;
             cx.request_exit();
         }
     }
 
     pub fn run(fullscreen: bool) {
+        #[cfg(target_os = "macos")]
+        observe_native_startup();
         let title = format!(
             "Halcyon startup native proof {} fullscreen={fullscreen}",
             std::process::id(),
         );
-        let (config, observer) = AppConfig::new(&title)
+        let config = AppConfig::new(&title)
             .with_size(320.0, 180.0)
-            .with_fullscreen(fullscreen)
-            .with_frame_realization_observer();
+            .with_fullscreen(fullscreen);
+        #[cfg(target_os = "macos")]
+        let config = config.with_theme(halcyon::core::theme::Theme::dark());
+        let (config, observer) = config.with_frame_realization_observer();
         let state = Arc::new(Mutex::new(StartupState::default()));
         let screen = StartupScreen {
             title,
@@ -852,14 +1091,14 @@ mod startup_native_proof {
         };
         App::new(config).run(screen);
         let state = state.lock().unwrap();
-        assert!(state.entered_hidden);
+        assert!(state.entered_startup);
         assert!(state.pending_flushes > 0);
         assert!(
             state.done,
             "startup proof exited before visibility and frame evidence"
         );
         println!(
-            "app_frame_realization_startup_native: PASS (HWND visibility and primary submit/present ordering)"
+            "app_frame_realization_startup_native: PASS (native visibility and primary submit/present ordering)"
         );
     }
 }
@@ -4376,10 +4615,10 @@ fn main() {
         return;
     }
     if startup {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         startup_native_proof::run(args.iter().any(|arg| arg == "--fullscreen"));
-        #[cfg(not(windows))]
-        panic!("--run-startup-native requires Windows HWND visibility observation");
+        #[cfg(not(any(windows, target_os = "macos")))]
+        panic!("--run-startup-native requires Windows or macOS native visibility observation");
         return;
     }
     if !native {
@@ -4405,6 +4644,10 @@ fn main() {
         first: None,
         started: Instant::now(),
         scale_proof,
+        #[cfg(target_os = "macos")]
+        native_unocclusion: observe_native_startup(),
+        #[cfg(target_os = "macos")]
+        initially_unavailable: Default::default(),
         #[cfg(windows)]
         inactive: None,
     };

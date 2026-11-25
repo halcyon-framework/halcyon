@@ -35,7 +35,7 @@ cargo run --locked -p halcyon --example checkbox
 ```
 
 Each command opens its own application. Close the first before running the
-second. These examples use Halcyon’s Cargo root and its dependency patches.
+second. These examples use Halcyon’s Cargo root and its `winit` patch.
 See the [Web Showcase](../../examples/web_showcase/README.md) and
 [Web Touch Input](../../examples/web_touch_input/README.md) for the same
 source-root workflow in a WebGPU-capable desktop browser.
@@ -59,14 +59,11 @@ The three examples compiled and linked under Halcyon `0.270.2-beta` on Apple Sil
 
 Place `halcyon-starter` beside `halcyon`. Create the four files below in
 `halcyon-starter`. This application has its own Cargo workspace and lockfile.
-Cargo uses the patches from the application’s root manifest for this build.
-The `winit` patch supplies the corrected browser input and clipboard route.
-The `wgpu-hal` patch supplies the native macOS first-frame backport and
-Windows DX12 dependency alignment.
-The two exact direct dependency constraints pin the corrected versions. With
-`default-features = false`, the pins enable no default features on their own.
-See the source notes for [winit](../../vendor/winit-0.30.12/HALCYON-PATCH.md)
-and [wgpu-hal](../../vendor/wgpu-hal-30.0.2/HALCYON-BACKPORT.md).
+Cargo uses the application's root manifest to select the patched `winit`
+source for browser input and clipboard handling. The exact `winit`
+dependency pins the patched version with `default-features = false`.
+Halcyon uses the published `wgpu-hal` 30.0.2 release.
+See the [winit source notes](../../vendor/winit-0.30.12/HALCYON-PATCH.md).
 
 ### `Cargo.toml`
 
@@ -88,16 +85,12 @@ winit = { version = "=0.30.12", default-features = false }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-wgpu-hal = { version = "=30.0.2", default-features = false }
-
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.127"
 web-sys = { version = "=0.3.104", features = ["console", "Window", "Document", "Element", "Node"] }
 
 [patch.crates-io]
 winit = { path = "../halcyon/vendor/winit-0.30.12" }
-wgpu-hal = { path = "../halcyon/vendor/wgpu-hal-30.0.2" }
 ```
 
 ### `src/lib.rs`

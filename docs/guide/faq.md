@@ -30,13 +30,13 @@ for the supported source-based integration route.
 
 ### Why does a standalone application need dependency patches?
 
-The documented setup uses corrected `winit` and `wgpu-hal` sources.
-A separate application must select those sources in its own root Cargo
-manifest. The source-tree examples already use Halcyon's root patches.
+A separate application must select Halcyon's corrected `winit` source in its
+own root Cargo manifest. The source-tree examples use Halcyon's root patch.
+Halcyon uses the published `wgpu-hal` 30.0.2 release.
 
-Use the exact pins and patches in
+Use the exact pin and patch in
 [Create a sibling application](getting-started.md#create-a-sibling-application).
-That section also links the source notes explaining each correction.
+That section also links the `winit` source notes.
 
 ## Architecture and design
 

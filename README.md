@@ -19,10 +19,10 @@ cargo run --locked -p halcyon --example showcase
 This beta is distributed as a complete source tree. The initial
 [`halcyon-rs` 0.0.0 package](https://crates.io/crates/halcyon-rs) is a notice
 of the official package identity, not an installable framework release.
-A separate Cargo application must select Halcyon's corrected `winit` and
-`wgpu-hal` sources in its own root manifest. The standalone example in the
+A separate Cargo application must select Halcyon's corrected `winit` source
+in its own root manifest. The standalone example in the
 [Getting started guide](docs/guide/getting-started.md#create-a-sibling-application)
-includes the exact pins and patches.
+includes the exact pin and patch.
 
 - [Getting started](docs/guide/getting-started.md)
 - [Documentation index](docs/guide/index.md)

@@ -6384,13 +6384,13 @@ impl NativeStartupOutput {
     fn new(
         attempt_id: crate::core::frame_realization::AppFrameAttemptId,
         primary: SurfaceId,
-        primary_visible: bool,
+        primary_startup_complete: bool,
         startup_ready: bool,
         primary_output_ready: bool,
     ) -> Self {
         Self {
             required: cfg!(not(target_arch = "wasm32"))
-                && !primary_visible
+                && !primary_startup_complete
                 && startup_ready
                 && primary_output_ready,
             attempt_id,
@@ -6438,13 +6438,13 @@ struct CompiledAppAttempt {
 impl CompiledAppAttempt {
     fn native_startup_output(
         &self,
-        primary_visible: bool,
+        primary_startup_complete: bool,
         base_surface_id: SurfaceId,
     ) -> NativeStartupOutput {
         NativeStartupOutput::new(
             self.id,
             base_surface_id,
-            primary_visible,
+            primary_startup_complete,
             self.startup_ready,
             self.primary_output_ready,
         )
@@ -6456,10 +6456,10 @@ impl CompiledAppAttempt {
             crate::renderer::RendererCompileOutcome<T>,
             crate::renderer::RendererCompileError,
         >,
-        primary_visible: bool,
+        primary_startup_complete: bool,
         base_surface_id: SurfaceId,
     ) {
-        let startup = self.native_startup_output(primary_visible, base_surface_id);
+        let startup = self.native_startup_output(primary_startup_complete, base_surface_id);
         match result {
             Ok(crate::renderer::RendererCompileOutcome::NoTargets) => {
                 if let Some(recorder) = &mut self.recorder {
@@ -6513,13 +6513,15 @@ fn finish_compiled_app_attempt(
     compiled: crate::renderer::sdf_frame_custody::SdfCompiledFrame,
     attempt: &mut CompiledAppAttempt,
     window: &winit::window::Window,
+    #[cfg(target_os = "macos")]
+    startup_presentation: &mut Option<crate::platform::native_startup_macos::NativeStartupPresentation>,
     base_surface_id: SurfaceId,
-    primary_visible: &mut bool,
+    primary_startup_complete: &mut bool,
     required_text_faults: &mut RequiredTextFaultGuard,
     retained_scene_cache: &mut RetainedSceneCache,
     context: &mut AppContext,
-) {
-    let startup = attempt.native_startup_output(*primary_visible, base_surface_id);
+) -> bool {
+    let startup = attempt.native_startup_output(*primary_startup_complete, base_surface_id);
     let compile_us = attempt.compile_started.elapsed().as_micros();
     resize_profiler::add_compile_time_us(compile_us as u64);
     required_text_faults.compiled(attempt.id, compiled.plan());
@@ -6532,8 +6534,19 @@ fn finish_compiled_app_attempt(
     } else { Vec::new() };
     if let Some(recorder) = &mut attempt.recorder { recorder.compiled_frame(&compiled); }
     let render_start = Instant::now();
+    #[cfg(target_os = "macos")]
+    let mut primary_occluded = false;
+    #[cfg(not(target_os = "macos"))]
+    let primary_occluded = false;
     let outputs = startup
-        .require_success("Render failed", renderer.render_sdf_frame(compiled))
+        .require_success(
+            "Render failed",
+            renderer.render_sdf_frame(
+                compiled,
+                #[cfg(target_os = "macos")]
+                startup.required.then_some((base_surface_id, &mut primary_occluded)),
+            ),
+        )
         .unwrap_or_else(|error| {
             tracing::error!(
                 ?error,
@@ -6541,10 +6554,16 @@ fn finish_compiled_app_attempt(
             );
             Vec::new()
         });
-    startup.require_primary(outputs.iter().map(|output| output.surface_id()));
+    if primary_occluded {
+        tracing::debug!(target: "halcyon::native_startup", event = "primary_acquisition_occluded",
+            attempt = attempt.id.sequence(), surface_id = ?base_surface_id);
+    } else {
+        startup.require_primary(outputs.iter().map(|output| output.surface_id()));
+    }
     let render_us = render_start.elapsed().as_micros();
     resize_profiler::add_render_time_us(render_us as u64);
     let submit_start = Instant::now();
+    let mut submitted_output = false;
     for output in outputs {
         let surface_id = output.surface_id();
         required_text_faults.assert_output_allowed(attempt.id, surface_id);
@@ -6576,11 +6595,17 @@ fn finish_compiled_app_attempt(
         if let Some(recorder) = &mut attempt.recorder {
             recorder.output_produced(surface_id);
         }
-        if !*primary_visible && attempt.startup_ready && surface_id == base_surface_id {
+        if !*primary_startup_complete && attempt.startup_ready && surface_id == base_surface_id {
             crate::platform::window::prepare_startup_visibility(window);
             if let Err(error) = startup.require_success(
                 "Startup submission failed",
-                renderer.submit_sdf_output_startup(output, || window.set_visible(true)),
+                renderer.submit_sdf_output_startup(output, || {
+                    #[cfg(not(target_os = "macos"))]
+                    window.set_visible(true);
+                    #[cfg(target_os = "macos")]
+                    tracing::debug!(target: "halcyon::native_startup", event = "primary_gpu_completed",
+                        attempt = attempt.id.sequence(), ?surface_id);
+                }),
             ) {
                 tracing::error!(
                     ?error,
@@ -6589,7 +6614,13 @@ fn finish_compiled_app_attempt(
                 continue;
             }
             crate::platform::window::finish_startup_visibility(window);
-            *primary_visible = true;
+            #[cfg(target_os = "macos")]
+            {
+                tracing::debug!(target: "halcyon::native_startup", event = "primary_present_called",
+                    attempt = attempt.id.sequence(), ?surface_id);
+                drop(startup_presentation.take());
+            }
+            *primary_startup_complete = true;
         } else if let Err(error) = renderer.submit_sdf_output(output) {
             tracing::error!(
                 ?error,
@@ -6598,6 +6629,7 @@ fn finish_compiled_app_attempt(
             );
             continue;
         }
+        submitted_output = true;
         required_text_faults.submitted_and_presented(attempt.id, surface_id);
         if surface_id == base_surface_id {
             for (front, binding) in &plot_images {
@@ -6619,7 +6651,10 @@ fn finish_compiled_app_attempt(
     }
     let submit_us = submit_start.elapsed().as_micros();
     resize_profiler::add_submit_time_us(submit_us as u64);
-    renderer.advance_frame();
+    let completed_frame = !primary_occluded || submitted_output;
+    if completed_frame {
+        renderer.advance_frame();
+    }
     tracing::debug!(
         build_scene_us = attempt.build_scene_started.elapsed().as_micros(),
         draw_plan_us = attempt.draw_plan_us,
@@ -6628,6 +6663,7 @@ fn finish_compiled_app_attempt(
         submit_us,
         "frame: pipeline stages"
     );
+    completed_frame
 }
 
 fn publish_framework_appearance(

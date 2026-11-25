@@ -8533,6 +8533,9 @@ impl WgpuRenderer {
     /// # Returns
     ///
     /// A vector of MultiTargetRenderOutput, one per target in z-order.
+    /// A macOS target may be absent from the outputs while its window is
+    /// occluded, including before the initial native visibility notification.
+    /// Request the next ordinary redraw on `WindowEvent::Occluded(false)`.
     pub fn render_multi(
         &mut self,
         compiled: crate::renderer::compiled_draw_plan::MultiTargetDrawPlan,
@@ -8543,12 +8546,18 @@ impl WgpuRenderer {
             tracing::error!("HAL381 output requires canonical frame custody");
             return Vec::new();
         }
-        self.render_multi_owned(compiled, Self::encode_compiled_target)
+        self.render_multi_owned(
+            compiled,
+            #[cfg(target_os = "macos")]
+            None,
+            Self::encode_compiled_target,
+        )
     }
 
     fn render_multi_owned(
         &mut self,
         compiled: crate::renderer::compiled_draw_plan::MultiTargetDrawPlan,
+        #[cfg(target_os = "macos")] mut watch_occlusion: Option<(SurfaceId, &mut bool)>,
         mut encode: impl FnMut(
             &Self,
             &crate::renderer::compiled_draw_plan::MultiTargetDrawPlan,
@@ -8626,10 +8635,16 @@ impl WgpuRenderer {
                     );
                     continue;
                 }
-                Err(crate::renderer::RendererSurfaceError::Timeout | crate::renderer::RendererSurfaceError::Occluded) => {
-                    // The target is temporarily unavailable.
+                Err(crate::renderer::RendererSurfaceError::Occluded) => {
+                    #[cfg(target_os = "macos")]
+                    if let Some((watched_surface, occluded)) = &mut watch_occlusion
+                        && *watched_surface == surface_id
+                    {
+                        **occluded = true;
+                    }
                     continue;
                 }
+                Err(crate::renderer::RendererSurfaceError::Timeout) => continue,
                 Err(e) => {
                     // Fatal error - log and skip
                     tracing::error!("Surface {:?} error: {:?}", surface_id, e);
@@ -8669,6 +8684,7 @@ impl WgpuRenderer {
     pub(crate) fn render_sdf_frame(
         &mut self,
         frame: SdfCompiledFrame,
+        #[cfg(target_os = "macos")] watch_occlusion: Option<(SurfaceId, &mut bool)>,
     ) -> Result<Vec<SdfRenderOutput>, SdfFrameCustodyError> {
         let SdfCompiledFrame {
             plan,
@@ -8676,15 +8692,29 @@ impl WgpuRenderer {
             companions,
         } = frame;
         if let Some(companions) = companions {
-            return self.render_sdf_frame_with_companions(plan, custody, companions);
+            return self.render_sdf_frame_with_companions(
+                plan,
+                custody,
+                companions,
+                #[cfg(target_os = "macos")]
+                watch_occlusion,
+            );
         }
-        self.render_sdf_frame_outputs(plan, custody, Self::encode_compiled_target, |_| None)
+        self.render_sdf_frame_outputs(
+            plan,
+            custody,
+            #[cfg(target_os = "macos")]
+            watch_occlusion,
+            Self::encode_compiled_target,
+            |_| None,
+        )
     }
 
     fn render_sdf_frame_outputs(
         &mut self,
         plan: crate::renderer::compiled_draw_plan::MultiTargetDrawPlan,
         custody: SdfSceneCustody,
+        #[cfg(target_os = "macos")] watch_occlusion: Option<(SurfaceId, &mut bool)>,
         encode: impl FnMut(
             &Self,
             &crate::renderer::compiled_draw_plan::MultiTargetDrawPlan,
@@ -8696,7 +8726,12 @@ impl WgpuRenderer {
         let presence = plan.presence.clone();
         // Retained CPU references stay alive through all command encoding. A
         // failed/skipped target has no output; its queued use cancels normally.
-        let outputs = self.render_multi_owned(plan, encode);
+        let outputs = self.render_multi_owned(
+            plan,
+            #[cfg(target_os = "macos")]
+            watch_occlusion,
+            encode,
+        );
         outputs
             .into_iter()
             .map(|output| {

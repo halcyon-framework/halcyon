@@ -44,11 +44,17 @@ impl App {
                             app.config.height as u32,
                             app.config.fullscreen,
                         );
+                        let presentation = crate::platform::native_startup_macos::NativeStartupPresentation::install(
+                            &window.winit_window, &app.config.theme,
+                        );
+                        window.winit_window.set_visible(true);
+                        tracing::debug!(target: "halcyon::native_startup", event = "loading_shown");
                         event_handler = Some(pollster::block_on(app.create_event_handler(
                             screen,
                             Arc::new(window.winit_window),
                             event_loop_proxy.clone(),
                             window.scale_factor,
+                            Some(presentation),
                         )));
                     }
                     let handler = event_handler
@@ -113,6 +119,8 @@ impl App {
         window: std::sync::Arc<winit::window::Window>,
         event_loop_proxy: winit::event_loop::EventLoopProxy<()>,
         #[cfg(not(target_arch = "wasm32"))] mut platform_density: f32,
+        #[cfg(target_os = "macos")]
+        mut startup_presentation: Option<crate::platform::native_startup_macos::NativeStartupPresentation>,
     ) -> impl FnMut(AppLoopEvent, Option<&winit::event_loop::ActiveEventLoop>) + 'static {
         use crate::core::event::{InteractionDomainId, Modifiers, WindowId};
         use crate::core::math::Point;
@@ -543,7 +551,7 @@ impl App {
         // translates it into at most one window.request_redraw() per vsync cadence.
         let mut pending_render: bool = true;
         let mut suspended_app_compile: Option<SuspendedAppCompile> = None;
-        let mut primary_visible = false;
+        let mut primary_startup_complete = false;
         #[cfg(target_os = "ios")]
         let mut ios_suspended = false;
         #[cfg(target_os = "ios")]
@@ -816,6 +824,8 @@ impl App {
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 if matches!(event, WinitEvent::LoopExiting) {
+                    #[cfg(target_os = "macos")]
+                    drop(startup_presentation.take());
                     cancel_suspended_app_compile(&mut renderer, &mut suspended_app_compile);
                     if let Some(mut staging) = retained_scene_cache.sdf_material_staging.take() {
                         // End retained scene custody while the staging and registrar are live.
@@ -862,22 +872,24 @@ impl App {
                         }
                         let resumed = renderer.resume_sdf_compile(&waiting.identity);
                         waiting.attempt.check_compile_outcome(
-                            &resumed, primary_visible, base_surface_id,
+                            &resumed, primary_startup_complete, base_surface_id,
                         );
                         match resumed {
                             Ok(crate::renderer::RendererCompileOutcome::Ready(frame)) => {
-                                finish_compiled_app_attempt(
+                                let completed = finish_compiled_app_attempt(
                                     &mut renderer,
                                     frame,
                                     &mut waiting.attempt,
                                     window.as_ref(),
+                                    #[cfg(target_os = "macos")]
+                                    &mut startup_presentation,
                                     base_surface_id,
-                                    &mut primary_visible,
+                                    &mut primary_startup_complete,
                                     &mut required_text_faults,
                                     &mut retained_scene_cache,
                                     &mut app_root.context,
                                 );
-                                if waiting.attempt.should_present {
+                                if waiting.attempt.should_present && completed {
                                     ticker.mark_rendered(waiting.attempt.render_time);
                                     frame_number += 1;
                                     resize_profiler::inc_frame();
@@ -968,10 +980,10 @@ impl App {
                     let size = pending_resize.unwrap_or(primary_physical_size);
                     size.width == 0 || size.height == 0
                 };
-                let startup_frame = (!primary_visible || primary_inactive)
+                let startup_frame = (!primary_startup_complete || primary_inactive)
                     && matches!(&event, WinitEvent::AboutToWait)
                     && (pending_render || pending_resize.is_some());
-                let primary_redraw = primary_visible
+                let primary_redraw = primary_startup_complete
                     && matches!(
                         &event,
                         WinitEvent::WindowEvent {
@@ -1331,7 +1343,7 @@ impl App {
                         // before build_scene. Enables same-frame application of discrete
                         // actions (e.g., column auto-size) without affecting continuous
                         // smoothing paths like drag-resize.
-                        if !primary_visible {
+                        if !primary_startup_complete {
                             app_root.flush_pending_startup_modal_actions_with_composite_editors(
                                 &mut widget_tree, &mut event_router,
                                 interaction_domains.primary_state_mut(), renderer.text_engine_mut(),
@@ -1947,7 +1959,7 @@ impl App {
 
                         // SPEC-HAL-161: Production frame path must enforce the
                         // same no-signal-delivery critical section as run_single_frame().
-                        let startup_ready = if !primary_visible && renderer.target_has_active_extent(base_surface_id) {
+                        let startup_ready = if !primary_startup_complete && renderer.target_has_active_extent(base_surface_id) {
                             let ready = app_root.startup_ready().unwrap_or_else(|error| {
                                 panic!("SPEC-HAL-018 §16: startup readiness failed: {error}")
                             });
@@ -2039,7 +2051,7 @@ impl App {
                         }
                         if !primary_geometry_ready {
                             pending_render = true;
-                            if !primary_visible || primary_inactive {
+                            if !primary_startup_complete || primary_inactive {
                                 if let Some(wake) = retained_scene_cache.image_wake.as_ref() {
                                     let _ = wake.send_event(());
                                 }
@@ -2163,7 +2175,7 @@ impl App {
                                 tooltip_active = tooltip_manager.needs_tick(),
                                 capture_active = any_pointer_captured,
                                 continuous_input = event_router.continuous_frames_requested(),
-                                animation_needed, pending_render, primary_visible,
+                                animation_needed, pending_render, primary_startup_complete,
                                 geometry_ready = primary_geometry_ready,
                                 material_pending = scene_outcome.material_pending, plot_pending,
                                 visual_changed = scene_outcome.visual_changed,
@@ -2186,6 +2198,7 @@ impl App {
 
                         let should_present = (primary_output_ready && scene_outcome.visual_changed)
                             || !runtime_child_windows.is_empty();
+                        let mut completed_frame = should_present;
                         let should_compile = should_present || scene_outcome.material_pending;
                         if !should_compile {
                             drain_requested_images_for_reused_scene(&mut renderer);
@@ -2376,7 +2389,7 @@ impl App {
                             Ok(plan) => plan,
                             Err(error) => {
                                 NativeStartupOutput::new(
-                                    attempt_id, base_surface_id, primary_visible,
+                                    attempt_id, base_surface_id, primary_startup_complete,
                                     startup_ready, primary_output_ready,
                                 ).reject(format_args!("{error}"));
                                 tracing::error!(target: "halcyon::core::app", %error, "DrawPlan Build refused");
@@ -2417,7 +2430,7 @@ impl App {
                             build_scene_started: build_scene_start, compile_started: compile_start, draw_plan_us,
                         };
                         compile_attempt.check_compile_outcome(
-                            &compiled, primary_visible, base_surface_id,
+                            &compiled, primary_startup_complete, base_surface_id,
                         );
                         match compiled {
                             Ok(crate::renderer::RendererCompileOutcome::Ready(frame)) => {
@@ -2449,9 +2462,12 @@ impl App {
                         }
                         drop(_frame_critical_section);
                         if let Some(frame) = compiled_frame {
-                            finish_compiled_app_attempt(
-                                &mut renderer, frame, &mut compile_attempt, window.as_ref(),
-                                base_surface_id, &mut primary_visible, &mut required_text_faults,
+                            completed_frame &= finish_compiled_app_attempt(
+                                &mut renderer, frame, &mut compile_attempt,
+                                window.as_ref(),
+                                #[cfg(target_os = "macos")]
+                                &mut startup_presentation,
+                                base_surface_id, &mut primary_startup_complete, &mut required_text_faults,
                                 &mut retained_scene_cache, &mut app_root.context,
                             );
                         }
@@ -2461,7 +2477,7 @@ impl App {
                         }
 
                         required_text_faults.emit_diagnostics();
-                        if should_present {
+                        if completed_frame {
                             ticker.mark_rendered(frame_time.now);
                             frame_number += 1;
 
@@ -2504,6 +2520,21 @@ impl App {
                         window_id,
                         event: win_event,
                     } => {
+                        #[cfg(target_os = "macos")]
+                        if matches!(&win_event, WinitWindowEvent::Occluded(false)) {
+                            let surface_id = if window_id == window.id() {
+                                Some(base_surface_id)
+                            } else {
+                                runtime_child_windows.get(&window_id).map(|child| child.surface_id)
+                            };
+                            if let Some(surface_id) = surface_id {
+                                pending_render = true;
+                                ticker.notify_reason(FrameReason::Forced);
+                                tracing::debug!(target: "halcyon::native_startup", event = "native_unoccluded",
+                                    surface = surface_id.raw(), after_attempt = native_layout_trace_last_attempt);
+                                return;
+                            }
+                        }
                         if runtime_child_windows.contains_key(&window_id) {
                             pending_render = true;
                             ticker.notify_reason(FrameReason::Input);
@@ -2833,6 +2864,20 @@ impl App {
                             current_modifiers = Modifiers::default();
                         }
 
+                        // AppKit continues to own the native window while loading.
+                        // Drop concealed client input before routing or queueing it.
+                        #[cfg(target_os = "macos")]
+                        if !primary_startup_complete
+                            && !matches!(&win_event,
+                                WinitWindowEvent::CloseRequested | WinitWindowEvent::Destroyed
+                                | WinitWindowEvent::Focused(_) | WinitWindowEvent::Resized(_)
+                                | WinitWindowEvent::ScaleFactorChanged { .. }
+                                | WinitWindowEvent::Moved(_) | WinitWindowEvent::Occluded(_)
+                                | WinitWindowEvent::ThemeChanged(_))
+                        {
+                            return;
+                        }
+
                         // Handle cursor movement
                         if let WinitWindowEvent::CursorMoved { position, .. } = &win_event {
                             last_physical_cursor_pos = Some((position.x, position.y));
@@ -3004,6 +3049,9 @@ impl App {
                         event: winit::event::DeviceEvent::MouseMotion { delta },
                         ..
                     } => {
+                        if !primary_startup_complete {
+                            return;
+                        }
                         let gate =
                             EventRouter::relative_ingress_gate(interaction_domains.primary_state());
                         #[cfg(debug_assertions)]
@@ -3048,7 +3096,7 @@ impl App {
                     }
                     WinitEvent::NewEvents(StartCause::Init) => {
                         pending_render = true;
-                        if primary_visible {
+                        if primary_startup_complete {
                             window.request_redraw();
                         }
                     }
@@ -3063,7 +3111,7 @@ impl App {
                         }
                     }
                     WinitEvent::AboutToWait => {
-                        if !primary_visible {
+                        if !primary_startup_complete {
                             return;
                         }
                         // Coalesced input redraw: at most one request_redraw per vsync cadence.

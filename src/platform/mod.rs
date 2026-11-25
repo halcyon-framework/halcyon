@@ -7,6 +7,8 @@ pub mod menu_host;
 pub mod native_font_backend;
 #[cfg(target_os = "macos")]
 pub mod native_menu_macos;
+#[cfg(target_os = "macos")]
+pub(crate) mod native_startup_macos;
 #[cfg(target_os = "ios")]
 pub(crate) mod native_choice_ios;
 pub mod relative_pointer;
