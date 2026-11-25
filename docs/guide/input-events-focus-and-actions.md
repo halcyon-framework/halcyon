@@ -208,12 +208,11 @@ touch input before render-target teardown
 The six public `touch_contact_` regressions in
 `tests/gesture_cancellation_stage4.rs`, seven platform/Fusion inline tests and
 three App boundary tests passed. These are synthetic path and lifecycle
-proofs. Reader's actual iOS app also built, installed and launched with a
-Complete Metal frame receipt. JC's subsequent manual Simulator check is
-confirmed by twelve Button Down events, twelve Up events and twelve Reader
-callbacks in `wtl-reader/target/reader-001/run.BLk1Rp/stdout.log`; line 1102
-records `Reader button activated presses=12` at 09:43:15.654614 UTC. Line 1105
-records Complete realization of the updated counter, submitted and presented.
+proofs. A separate iOS consumer also built, installed and launched with a
+Complete Metal frame receipt. The maintainer's subsequent manual Simulator
+check recorded twelve Button Down events, twelve Up events and twelve
+activation callbacks. The final activation at 09:43:15.654614 UTC was followed
+by Complete realization of the updated counter, submitted and presented.
 Long-press selection, double-tap recognition, pan/scroll and pinch recognition
 remain absent from this scoped implementation; HAL-128's Touch+Select
 restriction is unchanged.
