@@ -1,10 +1,16 @@
-# Halcyon Web input patches for winit 0.30.12
+# halcyon-winit 0.30.12
 
-Base: the published `winit` 0.30.12 crate, SHA-256
+`halcyon-winit` is a temporary Halcyon-specific Web derivative of upstream
+[winit](https://github.com/rust-windowing/winit). Its Rust library is named
+`winit`. Halcyon selects this derivative on WebAssembly and uses upstream
+winit 0.30.12 on native targets.
+
+The base is the published `winit` 0.30.12 crate at upstream commit
+`f6893a4390dfe6118ce4b33458d458fd3efd3025`, with archive SHA-256
 `c66d4b9ed69c4009f6321f762d6e61ad8a2389cd431b97cb1e146812e9e6c732`.
-The package version is 0.30.12 and the upstream [license](LICENSE) applies
-to the vendored crate. The upstream [image attribution](docs/res/ATTRIBUTION.md)
-is retained.
+The source and derivative use the [Apache License 2.0](LICENSE). The package
+includes the [upstream readme](README.md), [original manifest](Cargo.upstream.toml),
+and [image attribution](docs/res/ATTRIBUTION.md).
 
 The five changed Web files supply modifier ordering, browser clipboard
 shortcut transport, and a caller-owned sibling input overlay.
@@ -32,5 +38,6 @@ shortcut transport, and a caller-owned sibling input overlay.
   over the overlay retains the browser's activation behavior for the host
   picker. Halcyon owns selection and commit.
 
-An application that depends on Halcyon selects this patched source in its
-own root Cargo manifest. See the [standalone application guide](../../docs/guide/getting-started.md).
+Applications using Halcyon's windowing types import them from
+`halcyon::winit`. Upstream winit types have a separate identity on WebAssembly.
+See the [standalone application guide](https://github.com/halcyon-framework/halcyon/blob/master/docs/guide/getting-started.md).
