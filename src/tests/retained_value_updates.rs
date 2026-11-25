@@ -5907,6 +5907,127 @@ fn retained_scene_repaints_only_the_dirty_widget_and_recomposes_its_ancestors() 
     assert_eq!(sibling_paints.get(), 1);
 }
 
+#[test]
+fn compound_fill_rule_repaint_keeps_retained_identity_and_changes_coverage() {
+    use crate::compositor::{Compositor, SceneKey};
+    use crate::core::scene::{PathNode, SceneNode};
+    use crate::renderer::DrawPlanBuilder;
+    use crate::renderer::mesh_cache::MeshCache;
+    use crate::renderer::path::{FillRule, Path};
+    use std::collections::HashMap;
+
+    struct RuleProbe {
+        id: WidgetInternalId,
+        rule: Rc<Cell<FillRule>>,
+        path: Path,
+        layouts: Rc<Cell<usize>>,
+    }
+    impl WidgetDowncast for RuleProbe {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+    impl Widget for RuleProbe {
+        fn id(&self) -> WidgetInternalId {
+            self.id
+        }
+        fn layout(&mut self, _: &mut LayoutContext, k: Constraints, _: &[NodeId]) -> LayoutResult {
+            self.layouts.set(self.layouts.get() + 1);
+            let size = k.constrain(Size::new(32.0, 32.0));
+            LayoutResult::new(size, size)
+        }
+        fn paint(&self, cx: &mut PaintContext, _: RectF, _: &[NodeId]) {
+            cx.scene
+                .push_path_with_fill_rule(
+                    self.path.clone(),
+                    self.rule.get(),
+                    Color::WHITE,
+                    3,
+                    Some(self.id.0.into()),
+                )
+                .unwrap();
+        }
+    }
+    fn path_node(nodes: &[SceneNode]) -> Option<&PathNode> {
+        nodes.iter().find_map(|node| match node {
+            SceneNode::Path(path) => Some(path),
+            SceneNode::RetainedFragment(fragment) => path_node(&fragment.children),
+            SceneNode::Clip(clip) => path_node(&clip.children),
+            SceneNode::Layer(layer) => path_node(&layer.children),
+            SceneNode::Scroll(scroll) => path_node(&scroll.children),
+            _ => None,
+        })
+    }
+
+    let rule = Rc::new(Cell::new(FillRule::NonZero));
+    let layouts = Rc::new(Cell::new(0));
+    let mut path = Path::rounded_rect(1.0, 1.0, 20.0, 20.0, 0.0);
+    path.commands.extend(path.commands.clone());
+    let mut tree = WidgetTree::new();
+    let root = tree.create_root(
+        Box::new(RuleProbe {
+            id: WidgetInternalId::new(),
+            rule: rule.clone(),
+            path,
+            layouts: layouts.clone(),
+        }),
+        None,
+        0,
+    );
+    let mut harness = RetainedSceneTestHarness::new();
+    let constraints = Constraints::tight(Size::new(32.0, 32.0));
+    let theme = Theme::default();
+    let mut text = FontManagerTextEngine::new();
+    let icons = IconRegistry::new(&[]);
+    let first = harness.frame(&mut tree, root, constraints, &theme, &mut text, &icons);
+    let owner = tree.widget_id_for_node(root).unwrap();
+    let original_local = harness.local_fragment(owner).unwrap();
+    let idle = harness.frame(&mut tree, root, constraints, &theme, &mut text, &icons);
+    assert!(!idle.scene_built);
+    assert!(Arc::ptr_eq(&original_local, &harness.local_fragment(owner).unwrap()));
+
+    rule.set(FillRule::EvenOdd);
+    tree.mark_paint_dirty(root);
+    let second = harness.frame(&mut tree, root, constraints, &theme, &mut text, &icons);
+    assert!(second.scene_built && second.visual_changed);
+    assert_eq!(layouts.get(), 1);
+    assert!(!Arc::ptr_eq(&original_local, &harness.local_fragment(owner).unwrap()));
+
+    let viewport = RectF::new(0.0, 0.0, 32.0, 32.0);
+    let mut compositor = Compositor::new(viewport);
+    let surface = compositor.create_surface(0, viewport, SceneKey::BASE);
+    let mut cache = MeshCache::new();
+    let mut plan_builder = DrawPlanBuilder::new();
+    let mut original_identity = None;
+    for (index, (frame, expected_rule, visible_count)) in
+        [(first, FillRule::NonZero, 1), (second, FillRule::EvenOdd, 0)]
+            .into_iter()
+            .enumerate()
+    {
+        let mut builder = SceneBuilder::new();
+        builder.push_retained_fragment(frame.scene_root.into());
+        let scene = builder.build();
+        let node = path_node(&scene.root).unwrap();
+        assert_eq!(node.fill_rule, expected_rule);
+        let identity = (node.key.unwrap(), node.path.content_hash());
+        assert_eq!(*original_identity.get_or_insert(identity), identity);
+        let plan = plan_builder
+            .build_multi(
+                &HashMap::from([(surface, scene)]),
+                compositor.snapshot_multi(),
+                &mut cache,
+                |_| 1.0,
+                index as u64,
+            )
+            .unwrap();
+        assert_eq!(plan.surface_data[&surface].path_draws.len(), visible_count);
+    }
+    assert_eq!(cache.len(), 2);
+}
+
 fn selector_focus_projection(
     nodes: &[crate::core::scene::SceneNode],
 ) -> (

@@ -50,13 +50,13 @@ use crate::core::paint::{
     visit_luminous_contour_regions,
 };
 use crate::core::scene::{
-    Color, ImageTextureSource, LuminousContourNode, SceneNode, TextBackgroundSpan, ZIndex,
+    Color, ImageTextureSource, LuminousContourNode, PathNode, SceneNode, TextBackgroundSpan, ZIndex,
 };
 use crate::renderer::custom_render_prepare::ImageOccurrenceRecorder;
 use crate::renderer::mesh_cache::{MeshCache, MeshCacheKey, PixelSnapMode};
 use crate::renderer::path::{
-    Path, PathDebugMode, PathDraw, PathMesh, StrokeCap, StrokeJoin, StrokeParams,
-    tessellate_and_snap,
+    FillContours, Path, PathDebugMode, PathDraw, PathFillError, PathMesh, StrokeCap, StrokeJoin,
+    StrokeParams,
 };
 use crate::renderer::pipelines::shape_pipeline::ShapeType;
 use std::collections::HashMap;
@@ -2291,6 +2291,50 @@ impl Batcher {
         }
     }
 
+    fn resolve_path_mesh(
+        node: &PathNode,
+        mesh_cache: &mut MeshCache,
+        scale_factor: f32,
+        current_frame: u64,
+    ) -> Result<(PathMesh, Option<FillContours>), PathFillError> {
+        if let Some(mesh) = &node.mesh {
+            return Ok((mesh.clone(), None));
+        }
+
+        FillContours::validate_scale(scale_factor)?;
+        let mut contours = node.path.flatten_fill()?;
+        let snap_mode = if node.is_stroke {
+            PixelSnapMode::Edge
+        } else {
+            PixelSnapMode::Center
+        };
+        let key = MeshCacheKey {
+            path_hash: node.path.content_hash(),
+            render_width_q: MeshCacheKey::quantize_size(contours.bounds.width),
+            render_height_q: MeshCacheKey::quantize_size(contours.bounds.height),
+            // Actual expanded strokes supply their mesh and bypass this cache.
+            stroke_width_q: 0,
+            is_fill: !node.is_stroke,
+            fill_rule: node.fill_rule,
+            dpr_q: MeshCacheKey::quantize_dpr(scale_factor),
+            dpr_bits: scale_factor.to_bits(),
+            snap_mode,
+        };
+        let show_contour_edges = !node.is_stroke && node.debug == Some(PathDebugMode::Edges);
+        let cached = mesh_cache.get(&key, current_frame);
+        if cached.is_none() || show_contour_edges {
+            contours.project(snap_mode, scale_factor)?;
+        }
+        let mesh = if let Some(mesh) = cached {
+            mesh.clone()
+        } else {
+            let mesh = contours.tessellate_projected(node.fill_rule)?;
+            mesh_cache.insert(key, mesh.clone(), current_frame);
+            mesh
+        };
+        Ok((mesh, show_contour_edges.then_some(contours)))
+    }
+
     fn flatten_node(
         &mut self,
         node: &SceneNode,
@@ -2490,39 +2534,21 @@ impl Batcher {
                     path_node.color.b,
                     path_node.color.a,
                 ];
-                let mesh = if let Some(ref mesh) = path_node.mesh {
-                    // INV-VMP-009: Widget-supplied mesh bypasses cache
-                    mesh.clone()
-                } else {
-                    // SPEC-264: Check mesh cache before tessellating
-                    let path_hash = path_node.path.content_hash();
-                    let bounds = path_node.path.bounds();
-                    let snap_mode = if path_node.is_stroke {
-                        PixelSnapMode::Edge
-                    } else {
-                        PixelSnapMode::Center
-                    };
-                    let key = MeshCacheKey {
-                        path_hash,
-                        render_width_q: MeshCacheKey::quantize_size(bounds.width),
-                        render_height_q: MeshCacheKey::quantize_size(bounds.height),
-                        // TODO(SPEC-264): PathNode lacks stroke_width field — stroke meshes use
-                        // width=0 key, safe only while stroke tessellation doesn't vary by width
-                        stroke_width_q: 0,
-                        is_fill: !path_node.is_stroke,
-                        dpr_q: MeshCacheKey::quantize_dpr(scale_factor),
-                        snap_mode,
-                    };
-                    if let Some(cached) = mesh_cache.get(&key, current_frame) {
-                        cached.clone()
-                    } else {
-                        let mesh = tessellate_and_snap(&path_node.path, snap_mode, scale_factor);
-                        mesh_cache.insert(key, mesh.clone(), current_frame);
-                        mesh
+                let (mesh, debug_contours) = match Self::resolve_path_mesh(
+                    path_node,
+                    mesh_cache,
+                    scale_factor,
+                    current_frame,
+                ) {
+                    Ok(geometry) => geometry,
+                    Err(error) => {
+                        tracing::error!(%error, rule = ?path_node.fill_rule, scale_factor, "path fill refused");
+                        return;
                     }
                 };
 
-                if !mesh.vertices.is_empty() && !mesh.indices.is_empty() {
+                let has_mesh = !mesh.vertices.is_empty() && !mesh.indices.is_empty();
+                if has_mesh {
                     // SPEC-R-004 Stage 16: Choose fill vs stroke based on is_stroke flag
                     let scene_key = self.current_scene_key;
                     let path_draw = if path_node.is_stroke {
@@ -2532,11 +2558,11 @@ impl Batcher {
                     };
                     // SPEC-R-004 Stage 18: Pass z_index for deterministic ordering
                     self.add_path(path_draw, path_node.z_index);
-
-                    // SPEC-R-004 Stage 17: Emit debug overlays if requested
-                    if let Some(debug_mode) = path_node.debug {
-                        self.emit_path_debug_overlays(&mesh, debug_mode);
-                    }
+                }
+                if let Some(debug_mode) = path_node.debug
+                    && (has_mesh || debug_contours.is_some())
+                {
+                    self.emit_path_debug_overlays(&mesh, debug_mode, debug_contours.as_ref());
                 }
             }
             // SPEC-HAL-086 Stage 8: Scrollbar overlay nodes are purely for hit-testing
@@ -2620,6 +2646,7 @@ impl Batcher {
         &mut self,
         mesh: &crate::renderer::path::PathMesh,
         mode: PathDebugMode,
+        contours: Option<&FillContours>,
     ) {
         use crate::core::math::Point;
 
@@ -2642,12 +2669,21 @@ impl Batcher {
                 }
             }
             PathDebugMode::Edges => {
-                // Emit line segments between consecutive vertices
-                // This follows the path order (vertex sequence)
-                if mesh.vertices.len() >= 2 {
-                    for i in 0..mesh.vertices.len() - 1 {
-                        let a = Point::new(mesh.vertices[i][0], mesh.vertices[i][1]);
-                        let b = Point::new(mesh.vertices[i + 1][0], mesh.vertices[i + 1][1]);
+                if let Some(contours) = contours {
+                    for ([ax, ay], [bx, by]) in contours.edges() {
+                        self.add_line(
+                            Point::new(ax, ay),
+                            Point::new(bx, by),
+                            1.0,
+                            debug_color,
+                            debug_z,
+                        );
+                    }
+                } else {
+                    // Supplied meshes retain their vertex-sequence diagnostic.
+                    for edge in mesh.vertices.windows(2) {
+                        let a = Point::new(edge[0][0], edge[0][1]);
+                        let b = Point::new(edge[1][0], edge[1][1]);
                         self.add_line(a, b, 1.0, debug_color, debug_z);
                     }
                 }
@@ -3031,6 +3067,7 @@ pub(crate) fn test_flatten_counts(nodes: &[SceneNode]) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::path::FillRule;
 
     fn debug_path_draw_count(batcher: &Batcher) -> usize {
         batcher
@@ -4756,6 +4793,7 @@ mod tests {
         path.close();
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: None,
             color: Color::from_srgb(0.2, 0.4, 0.8, 0.5),
@@ -4816,6 +4854,7 @@ mod tests {
                 path.close();
 
                 SceneNode::Path(PathNode {
+                    fill_rule: FillRule::NonZero,
                     path,
                     mesh: None,
                     color,
@@ -4879,6 +4918,7 @@ mod tests {
         };
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::from_srgb(0.5, 0.25, 0.75, 0.9),
@@ -4975,6 +5015,7 @@ mod tests {
         path.close();
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: None,
             color: Color::from_srgb(0.8, 0.2, 0.4, 1.0),
@@ -5059,6 +5100,7 @@ mod tests {
 
         // Fill path
         let fill_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path: create_path(),
             mesh: None,
             color,
@@ -5070,6 +5112,7 @@ mod tests {
 
         // Stroke path (identical geometry and color)
         let stroke_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path: create_path(),
             mesh: None,
             color,
@@ -5128,6 +5171,7 @@ mod tests {
         };
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::from_srgb(0.9, 0.1, 0.1, 1.0),
@@ -5181,6 +5225,7 @@ mod tests {
         };
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::WHITE,
@@ -5230,6 +5275,7 @@ mod tests {
         path.close();
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::WHITE,
@@ -5247,6 +5293,116 @@ mod tests {
         let line_count = debug_path_draw_count(&batcher);
 
         assert_eq!(line_count, 3, "should have 3 edge lines (4 vertices - 1)");
+    }
+
+    fn assert_debug_edge_segments(batcher: &Batcher, expected: &[[[f32; 2]; 2]]) {
+        let mut lines = batcher
+            .path_draws()
+            .iter()
+            .filter(|draw| draw.color == [1.0, 0.0, 1.0, 1.0]);
+        for &expected_segment in expected {
+            let draw = lines.next().expect("source contour edge");
+            let &[start_left, start_right, end_left, end_right] = draw.mesh.vertices.as_slice()
+            else {
+                panic!("edge diagnostic must emit a butt-capped segment");
+            };
+            assert_eq!(draw.mesh.indices.len(), 6);
+            let midpoint = |a: [f32; 2], b: [f32; 2]| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+            let segment = [
+                midpoint(start_left, start_right),
+                midpoint(end_left, end_right),
+            ];
+            for (actual, expected) in segment.into_iter().zip(expected_segment) {
+                assert!(
+                    actual
+                        .into_iter()
+                        .zip(expected)
+                        .all(|(a, b)| (a - b).abs() < 1e-5),
+                    "expected endpoint {expected:?}, got {actual:?}",
+                );
+            }
+        }
+        assert!(lines.next().is_none(), "unexpected edge or bridge");
+    }
+
+    #[test]
+    fn test_stage17_generated_square_edges_follow_the_closed_contour() {
+        let mut builder = crate::core::scene::SceneBuilder::new();
+        builder.push_path_debug(
+            Path::rounded_rect(2.0, 3.0, 6.0, 6.0, 0.0),
+            Color::WHITE,
+            PathDebugMode::Edges,
+            0,
+            None,
+        );
+        let scene = builder.build();
+        let mut batcher = Batcher::new();
+        batcher.begin_frame(SceneKey::BASE);
+        batcher.flatten_scene(&scene.root, &mut MeshCache::new(), 1.0, 0);
+        assert_debug_edge_segments(
+            &batcher,
+            &[
+                [[2.0, 3.0], [8.0, 3.0]],
+                [[8.0, 3.0], [8.0, 9.0]],
+                [[8.0, 9.0], [2.0, 9.0]],
+                [[2.0, 9.0], [2.0, 3.0]],
+            ],
+        );
+    }
+
+    #[test]
+    fn test_stage17_generated_disconnected_edges_match_the_warm_projection() {
+        let mut path = Path::new();
+        path.move_to(2.2, 3.1);
+        path.line_to(7.0, 3.1);
+        path.line_to(7.18, 3.15); // Snaps to the previous point at this DPR.
+        path.line_to(7.0, 8.6);
+        path.line_to(2.2, 8.6); // Implicitly closed by the next MoveTo.
+        path.move_to(14.1, 3.31);
+        path.line_to(21.1, 3.31);
+        path.line_to(21.1, 8.9);
+        path.line_to(14.1, 8.9);
+        path.close();
+
+        let scale = 1.25_f32;
+        let bounds = path.bounds();
+        let key = MeshCacheKey {
+            path_hash: path.content_hash(),
+            render_width_q: MeshCacheKey::quantize_size(bounds.width),
+            render_height_q: MeshCacheKey::quantize_size(bounds.height),
+            stroke_width_q: 0,
+            is_fill: true,
+            fill_rule: FillRule::NonZero,
+            dpr_q: MeshCacheKey::quantize_dpr(scale),
+            dpr_bits: scale.to_bits(),
+            snap_mode: PixelSnapMode::Center,
+        };
+        let mut builder = crate::core::scene::SceneBuilder::with_scale_factor(scale);
+        builder.push_path_debug(path, Color::WHITE, PathDebugMode::Edges, 0, None);
+        let scene = builder.build();
+        let mut cache = MeshCache::new();
+        let mut batcher = Batcher::new();
+        let mut cached_vertices = None;
+        for frame in [1, 2, 3] {
+            batcher.begin_frame(SceneKey::BASE);
+            batcher.flatten_scene(&scene.root, &mut cache, scale, frame);
+            assert_debug_edge_segments(
+                &batcher,
+                &[
+                    [[2.4, 3.2], [7.2, 3.2]],
+                    [[7.2, 3.2], [7.2, 8.8]],
+                    [[7.2, 8.8], [2.4, 8.8]],
+                    [[2.4, 8.8], [2.4, 3.2]],
+                    [[14.4, 3.2], [20.8, 3.2]],
+                    [[20.8, 3.2], [20.8, 8.8]],
+                    [[20.8, 8.8], [14.4, 8.8]],
+                    [[14.4, 8.8], [14.4, 3.2]],
+                ],
+            );
+            assert_eq!(cache.len(), 1);
+            let vertices = cache.get(&key, frame).unwrap().vertices.as_ptr();
+            assert_eq!(*cached_vertices.get_or_insert(vertices), vertices);
+        }
     }
 
     #[test]
@@ -5271,6 +5427,7 @@ mod tests {
         path.close();
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::WHITE,
@@ -5312,6 +5469,7 @@ mod tests {
         path.close();
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::WHITE,
@@ -5365,6 +5523,7 @@ mod tests {
         path.close();
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::WHITE,
@@ -5502,6 +5661,7 @@ mod tests {
         path.close();
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::WHITE,
@@ -5742,6 +5902,7 @@ mod tests {
         path.close();
 
         let path_node = PathNode {
+            fill_rule: FillRule::NonZero,
             path,
             mesh: Some(mesh),
             color: Color::WHITE,

@@ -140,6 +140,16 @@ showed unwanted filled ink from compound contours in the simple Path fill.
 Author that icon with supported simple-contour layers and test real interior
 pixels; do not infer an outline from nonempty bounds or total ink alone.
 
+The subsequent CHECK failure confirms that contour concatenation is a
+general Path defect, not an icon-authoring defect. The scoped correction
+contract in SPEC-R-004 §13 requires the real fill primitive to preserve
+contours, consume the authored rule, and tessellate their combined filled
+set before blending. Until qualified, a declaration or a nonempty mesh is
+not evidence of support. After qualification, use that ordinary admitted
+compound-fill route rather than redrawing each affected icon or composing
+individual contour draws. Real interior, hole, gap and overlap pixel proof
+remains required.
+
 ### Mistake: soft-clipping an internal joined edge
 
 Rounded-clip inward antialiasing belongs to the exterior silhouette. A selected

@@ -1,6 +1,6 @@
 use crate::core::math::RectF;
 use crate::renderer::mesh_cache::*;
-use crate::renderer::path::PathMesh;
+use crate::renderer::path::{FillRule, PathMesh};
 
 fn dummy_mesh() -> PathMesh {
     PathMesh {
@@ -17,7 +17,9 @@ fn make_key(path_hash: u64, dpr_q: u32) -> MeshCacheKey {
         render_height_q: MeshCacheKey::quantize_size(16.0),
         stroke_width_q: 0,
         is_fill: true,
+        fill_rule: FillRule::NonZero,
         dpr_q,
+        dpr_bits: (dpr_q as f32 / 8.0).to_bits(),
         snap_mode: PixelSnapMode::Center,
     }
 }
@@ -117,7 +119,9 @@ fn test_color_independence() {
         render_height_q: key.render_height_q,
         stroke_width_q: key.stroke_width_q,
         is_fill: key.is_fill,
+        fill_rule: key.fill_rule,
         dpr_q: key.dpr_q,
+        dpr_bits: key.dpr_bits,
         snap_mode: key.snap_mode,
     };
 }

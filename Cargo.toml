@@ -1,6 +1,6 @@
 [package]
 name = "halcyon"
-version = "0.270.3-beta"
+version = "0.271.0-beta"
 edition = "2024"
 license = "MIT"
 description = "GPU-first retained-mode UI framework for Rust."
@@ -19,6 +19,7 @@ wgpu = { version = "=30.0.2", features = ["naga-ir"] }
 naga = { version = "=30.0.2", features = ["wgsl-in", "wgsl-out"] }
 bytemuck = { version = "1.24.0", features = ["derive"] }
 glam = "0.30.10"
+lyon_tessellation = "=1.0.22"
 pollster = "0.4.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"

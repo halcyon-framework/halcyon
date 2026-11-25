@@ -15,6 +15,7 @@
 use crate::core::math::{Point, RectF};
 use crate::core::scene_identity::SceneNodeKey;
 use crate::core::text_engine::GlyphRun;
+use crate::renderer::path::{FillRule, PathFillError};
 use std::fmt;
 use std::sync::Arc;
 
@@ -3017,6 +3018,25 @@ pub trait PaintSink {
         z_index: ZIndex,
         key: Option<SceneNodeKey>,
     );
+
+    /// Emit a path with an explicit fill rule (SPEC-R-004 §13.3).
+    /// Success means the sink accepted the scene primitive.
+    fn push_path_with_fill_rule(
+        &mut self,
+        path: crate::renderer::path::Path,
+        rule: FillRule,
+        color: Color,
+        z_index: ZIndex,
+        key: Option<SceneNodeKey>,
+    ) -> Result<(), PathFillError> {
+        match rule {
+            FillRule::NonZero => {
+                self.push_path(path, color, z_index, key);
+                Ok(())
+            }
+            FillRule::EvenOdd => Err(PathFillError::UnsupportedSink),
+        }
+    }
 
     /// SPEC-R-004: Push a stroked path with explicit width, joins, and caps.
     ///

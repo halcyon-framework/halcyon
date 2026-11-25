@@ -354,3 +354,143 @@ enum SceneNode {
 * Avoid dynamic tesselation on GPU (unreliable across vendors)
 * Avoid stencil-buffer vector fills (slow, synchronization-heavy)
 * Avoid signed-distance fields in this SPEC (part of future R-series)
+
+## 13. Compound fill correction (2026-11-25)
+
+**Scope:** Correct the implemented Path fill mechanism under §§2.1, 4 and 10.1.
+Implemented and independently accepted in 0.271.0-beta. Focused geometric,
+cache, retained-presentation, diagnostic and registry checks passed, together
+with native Metal and browser WebGPU pixel proof at 1×, 2× and 1.25×. This
+does not establish acceptance in every external application or on every
+platform. This does not adopt SPEC-HAL-264, HAL-265 or HAL-265A as a whole or
+change their declared statuses. Preserve the implemented scene, cache, clip,
+stroke, retained fragment and ordered draw mechanisms under their existing
+authority.
+
+### 13.1 Geometry and rule ownership
+
+- INV-R004-COMPOUND: One filled Path is one signed set of contours. Preserve
+  every MoveTo boundary and the authored winding through flattening. Fill
+  closes each contour implicitly; explicit Close remains distinct for the
+  existing stroke builder. Never connect the end of one contour to another
+  contour's start. Repeated/zero-length edges do not add coverage. Empty or
+  geometrically zero-area filled sets are legitimate empty output.
+- INV-R004-RULE: The renderer-owned `path::FillRule` is the single typed rule
+  with NonZero and EvenOdd, deriving Copy, Clone, Debug, Default (NonZero),
+  Eq, PartialEq and Hash. Re-export that same type from `core::icon::FillRule`
+  so existing icon imports and construction remain valid. A point is filled
+  iff the signed winding sum is nonzero, or its crossing parity is odd,
+  respectively. Do not independently reorient the source contours.
+- Preserve the public `Path { commands }`, PathCommand variants, builders,
+  `flatten()` and existing `to_mesh()` signature. The flat-point compatibility
+  query is not a fill tessellation input. Add
+  `Path::try_to_mesh_with_fill_rule(&self, rule: FillRule) -> Result<PathMesh, PathFillError>`.
+  Existing `to_mesh()` uses NonZero. PathMesh remains the existing vertices,
+  indices and bounds representation; its triangle ordering is not an API
+  guarantee.
+- INV-R004-ONE-COVERAGE: Tessellate all contours together into one triangle-list
+  mesh with disjoint triangle interiors covering exactly the admitted filled
+  set, including disconnected components, nested holes and islands, overlaps,
+  opposite-winding cancellation, coincident edges, touching contours, and
+  self-intersections. Only output triangles are normalized to the existing
+  renderer's CCW convention. No per-contour alpha composition, artificial
+  bridge, eraser polygon, convex hull, unconditional fan or partial fallback.
+  Transparent paint blends once per covered sample, not once per contour.
+
+### 13.2 CPU tessellation and target projection
+
+Use the Rust registry dependency `lyon_tessellation = "=1.0.22"` solely as the
+renderer-private complex fill sweep/monotone tessellator (FillTessellator,
+explicit FillOptions rule, intersections enabled, u32 indices). Its path
+re-export is sufficient; no second drawing engine or GPU pipeline. Qualify
+the exact newly resolved dependency closure and licenses before acceptance;
+do not update unrelated packages. The dependency's types do not cross the
+Halcyon API. This is the scoped implementation selection permitted by §4.3.
+
+Adapt the existing command stream into closed, separately identified flattened
+contours in the current logical coordinate space at the existing 0.25 logical
+pixel tolerance. Use the current adaptive flattening math for admitted curves,
+preserving contour boundaries and finite progress; do not apply the stroke
+builder's near-point removal policy to fill winding. Exact consecutive
+duplicates and duplicate closure points may be removed. Check command grammar,
+finite coordinates and finite subdivision/output before unsafe arithmetic or
+tessellation. Reject unrepresentable or non-progressing subdivision instead of
+recursing indefinitely. Do not discard a self-intersecting contour merely
+because its signed area is zero.
+
+For cached fills, apply the existing Center/Edge/None projection to flattened
+source contour points once at the actual positive finite effective DPR, before
+the compound tessellation. Use the existing rounding formulas; new intersection
+vertices are generated from those projected contours and are not independently
+rounded afterward. This prevents post-mesh snapping from crossing or
+duplicating coverage. Without snap, tessellate the original flattened contours.
+Recompute bounds from the emitted mesh. Existing true stroke expansion and
+explicit precomputed mesh entrypoints retain their behavior.
+
+A checked fill result distinguishes InvalidSource, InvalidScale,
+TessellationFailed and InvalidMesh using Halcyon-owned typed errors
+(`PathFillError`). Validate finite vertices, valid triangle indices, winding
+and nondegenerate emitted triangles. An empty admitted fill is success, not a
+failure. The old infallible mesh helpers retain their signatures, returning an
+empty mesh with an ordinary error diagnostic on actual refusal; never fabricate
+coverage. Batcher uses the checked result, records the failure through existing
+ordinary renderer diagnostics, emits no failed path and does not cache a failed
+result. The old simple-polygon index helper is not a production fill fallback.
+
+The §9.1 tessellation bound is interpreted for the simple/nonintersecting
+case; a general intersecting input can itself induce quadratic output size.
+Do not promise O(n log n) worst-case independent of intersection/output
+complexity, or implement a quadratic all-pairs preprocessing pass on ordinary
+paths. Existing renderer resource limits remain in force.
+
+### 13.3 Scene and cache transport
+
+- INV-R004-TRANSPORT: Add the explicit typed `fill_rule` to PathNode. Existing
+  SceneBuilder::push_path and debug paths select NonZero; preserve all existing
+  signatures. Add `SceneBuilder::push_path_with_fill_rule(path, rule, color,
+  z_index, key)` using the existing Path node. In PaintSink expose the same
+  operation returning `Result<(), PathFillError>`: a default implementation
+  forwards NonZero to the existing push_path and returns UnsupportedSink for
+  EvenOdd; the ordinary SceneBuilder implementation admits both. The result
+  denotes scene emission, not later GPU acceptance. No silent rule substitution.
+  Existing custom PaintSink implementations remain source-compatible.
+- SceneBuilder::push_icon emits each layer through this same uncached PathNode
+  construction with that exact IconLayer.fill_rule, existing scaled path,
+  existing resolved color and position, z-index and key policy. Do not change
+  icon definitions or split a layer into independent draws.
+- INV-R004-CACHE: Extend the existing MeshCacheKey with the typed fill_rule and
+  exact effective DPR bits in addition to existing command hash, dimensions,
+  stroke/fill, quantized DPR and snap mode. The existing renderer-owned lookup,
+  lifetime, eviction and color-independent geometry reuse remain authoritative.
+  Equal commands with different rules or distinct exact DPRs must not share
+  an entry, including when the quantized DPR is equal. Cache success only.
+  Preserve supplied meshes and their existing bypass; do not use that bypass
+  for ordinary fills/icons. Existing retained fragment identity and keys remain
+  unchanged; the rule is immutable paint payload and follows every ordinary
+  clone/recomposition, with paint invalidation on changed authored values.
+  No additional registry, global cache, widget identity, scene variant or
+  feature switch.
+
+### 13.4 Required proof and compatibility
+
+Prove the ordinary Path and actual registered CHECK route through SceneBuilder,
+cache, DrawPlan, Compile and Execute. Include an independent winding/parity
+oracle for safe interior samples, non-overlapping triangle interiors, exact
+gap/hole and overlap samples, both winding orientations, disjoint contours,
+same/opposite coincident contours, nested island, bow-tie, touching and
+collinear edges, curves, degenerate empty output and rejected invalid source.
+Test different fill rules over identical command content and same-quantized
+distinct DPRs, warm cache hits and retained repaint/recomposition. Use
+translucent fill with known background to distinguish one blend from two.
+Verify real GPU output of the unchanged CHECK arms and empty wedge, both fill
+rules and representative existing simple paths at 1x, 2x and fractional scale,
+including native and browser WebGPU. Preserve ordinary clipping, strict Z,
+existing stroke joins/caps and public examples. Reuse valid evidence; no broad
+unrelated renderer changes. This is the previously recorded PM-006 compound
+fill pathology, not a reason to redraw individual icons.
+
+The additive rule API and changed public low-level PathNode/MeshCacheKey
+struct-literal shape require a zero-major minor release classification.
+Target version 0.271.0-beta, with explicit compatibility notes in the
+changelog. Keep the initial public 0.270.3-beta section and archived history
+intact. Do not claim external application acceptance from framework-only proof.

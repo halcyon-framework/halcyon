@@ -1,9 +1,10 @@
 //! SPEC-HAL-265 §3–§6: Core icon type system.
 //!
 //! Pure data types for icon identity, classification, definition, and registry.
-//! No renderer or widget dependencies.
+//! Geometry and fill rules use the ordinary renderer Path types.
 
 use crate::core::scene::Color;
+pub use crate::renderer::path::FillRule;
 use crate::renderer::path::{Path, PathCommand};
 
 /// Stable identity token for icons. 4 bytes, cheap to pass everywhere.
@@ -73,13 +74,6 @@ pub struct IconLayer {
     pub fill_rule: FillRule,
     /// True for layers with computed geometry (line/circle expansion). Validator skips precision check.
     pub skip_precision: bool,
-}
-
-/// SVG-compatible fill rule for path tessellation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FillRule {
-    NonZero,
-    EvenOdd,
 }
 
 /// Semantic classification for icons.

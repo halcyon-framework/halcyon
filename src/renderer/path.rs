@@ -10,7 +10,36 @@
 
 use crate::compositor::SceneKey;
 use crate::core::math::RectF;
+use crate::renderer::mesh_cache::PixelSnapMode;
 use crate::renderer::pipelines::path_pipeline::PathInstance;
+
+mod fill;
+pub(super) use fill::FillContours;
+
+/// Winding test used to fill the combined contours of a path (SPEC-R-004 §13).
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub enum FillRule {
+    /// Fill where the sum of the signed contour crossings is nonzero.
+    #[default]
+    NonZero,
+    /// Fill where the number of contour crossings is odd.
+    EvenOdd,
+}
+
+/// A refusal to emit or tessellate a filled path (SPEC-R-004 §13).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PathFillError {
+    #[error("invalid path commands or unrepresentable path geometry")]
+    InvalidSource,
+    #[error("invalid device scale or unrepresentable pixel projection")]
+    InvalidScale,
+    #[error("path fill tessellation failed")]
+    TessellationFailed,
+    #[error("invalid tessellated path mesh")]
+    InvalidMesh,
+    #[error("paint sink does not support the requested path fill rule")]
+    UnsupportedSink,
+}
 
 // ============================================================================
 // SPEC-R-004 Stage 17: Path Debug Mode
@@ -125,6 +154,16 @@ impl Path {
     /// Each subpath is flattened independently, with Close commands adding
     /// the subpath start point to close the loop.
     pub fn flatten(&self) -> Vec<[f32; 2]> {
+        match self.flatten_points() {
+            Ok(points) => points,
+            Err(error) => {
+                tracing::error!(%error, "path flattening refused");
+                Vec::new()
+            }
+        }
+    }
+
+    fn flatten_points(&self) -> Result<Vec<[f32; 2]>, PathFillError> {
         let mut result = Vec::new();
         let mut current = [0.0f32, 0.0];
         let mut subpath_start = [0.0f32, 0.0];
@@ -141,24 +180,15 @@ impl Path {
                     result.push(current);
                 }
                 PathCommand::QuadTo(cx, cy, x, y) => {
-                    adaptive_flatten_quad(
-                        &mut result,
-                        current,
-                        [cx, cy],
-                        [x, y],
-                        FLATTEN_TOLERANCE,
-                    );
+                    adaptive_flatten(&mut result, [current, [cx, cy], [x, y]], 0)?;
                     current = [x, y];
                 }
                 PathCommand::CubicTo(c1x, c1y, c2x, c2y, x, y) => {
-                    adaptive_flatten_cubic(
+                    adaptive_flatten(
                         &mut result,
-                        current,
-                        [c1x, c1y],
-                        [c2x, c2y],
-                        [x, y],
-                        FLATTEN_TOLERANCE,
-                    );
+                        [current, [c1x, c1y], [c2x, c2y], [x, y]],
+                        0,
+                    )?;
                     current = [x, y];
                 }
                 PathCommand::Close => {
@@ -170,22 +200,26 @@ impl Path {
             }
         }
 
-        result
+        Ok(result)
     }
 
-    /// Convert the path to a triangle mesh.
-    ///
-    /// Flattens all curves and triangulates the resulting polygon using
-    /// monotone polygon triangulation.
+    /// Tessellate all contours together under the default NonZero rule.
+    /// On failure, emits a renderer diagnostic and returns an empty mesh.
     pub fn to_mesh(&self) -> PathMesh {
-        let flat = self.flatten();
-        let indices = triangulate_monotone(&flat);
-        let bounds = compute_bounds(&flat);
-        PathMesh {
-            vertices: flat,
-            indices,
-            bounds,
-        }
+        mesh_or_report(self.try_to_mesh_with_fill_rule(FillRule::NonZero))
+    }
+
+    /// Tessellate this path in logical coordinates under the requested fill rule.
+    ///
+    /// Each contour is implicitly closed for fill. An empty filled region
+    /// succeeds with an empty mesh.
+    pub fn try_to_mesh_with_fill_rule(&self, rule: FillRule) -> Result<PathMesh, PathFillError> {
+        self.flatten_fill()?
+            .tessellate(rule, PixelSnapMode::None, 1.0)
+    }
+
+    pub(super) fn flatten_fill(&self) -> Result<FillContours, PathFillError> {
+        FillContours::new(self)
     }
 
     /// Compute a deterministic content hash of the path command sequence.
@@ -283,39 +317,27 @@ impl Default for Path {
     }
 }
 
-/// Tessellate a path and apply pixel snapping per SPEC-HAL-264 §8.4.
-///
-/// INV-VMP-005: Pixel snapping is applied once at cache insertion time.
-/// - Converts vertices to physical pixel space (`v * dpr`)
-/// - Snaps per mode (Center: `round`, Edge: `floor + 0.5`)
-/// - Converts back to logical space (`v / dpr`)
-/// - Recomputes bounds from snapped vertices
-/// - For `PixelSnapMode::None`, returns mesh unchanged.
-pub fn tessellate_and_snap(
-    path: &Path,
-    snap_mode: super::mesh_cache::PixelSnapMode,
-    dpr: f32,
-) -> PathMesh {
-    let mut mesh = path.to_mesh();
+/// Project the flattened contour points, then tessellate under NonZero.
+/// Intersections are produced from the projected edges (SPEC-R-004 §13.2).
+pub fn tessellate_and_snap(path: &Path, snap_mode: PixelSnapMode, dpr: f32) -> PathMesh {
+    mesh_or_report(
+        path.flatten_fill()
+            .and_then(|contours| contours.tessellate(FillRule::NonZero, snap_mode, dpr)),
+    )
+}
 
-    if matches!(snap_mode, super::mesh_cache::PixelSnapMode::None) {
-        return mesh;
+fn mesh_or_report(result: Result<PathMesh, PathFillError>) -> PathMesh {
+    match result {
+        Ok(mesh) => mesh,
+        Err(error) => {
+            tracing::error!(%error, "path fill refused");
+            PathMesh {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                bounds: RectF::zero(),
+            }
+        }
     }
-
-    for v in &mut mesh.vertices {
-        let px = v[0] * dpr;
-        let py = v[1] * dpr;
-        let (sx, sy) = match snap_mode {
-            super::mesh_cache::PixelSnapMode::Center => (px.round(), py.round()),
-            super::mesh_cache::PixelSnapMode::Edge => (px.floor() + 0.5, py.floor() + 0.5),
-            super::mesh_cache::PixelSnapMode::None => unreachable!(),
-        };
-        v[0] = sx / dpr;
-        v[1] = sy / dpr;
-    }
-
-    mesh.bounds = compute_bounds(&mesh.vertices);
-    mesh
 }
 
 impl Path {
@@ -810,98 +832,74 @@ pub struct StrokeMesh {
 // Curve Flattening - Adaptive Subdivision
 // ============================================================================
 
-/// Adaptively flatten a quadratic Bézier curve.
-///
-/// Subdivides the curve until the maximum deviation from the true curve
-/// is less than the specified tolerance.
-fn adaptive_flatten_quad(
+/// Subdivide a quadratic or cubic at 0.5 using the existing de Casteljau math.
+fn adaptive_flatten<const N: usize>(
     output: &mut Vec<[f32; 2]>,
-    p0: [f32; 2],
-    p1: [f32; 2],
-    p2: [f32; 2],
-    tolerance: f32,
-) {
-    // Compute the deviation: distance from control point to the line p0-p2
-    let deviation = quad_deviation(p0, p1, p2);
-
-    if deviation <= tolerance {
-        // Curve is flat enough, just output the endpoint
-        output.push(p2);
-    } else {
-        // Subdivide at t=0.5 using de Casteljau's algorithm
-        let mid01 = midpoint(p0, p1);
-        let mid12 = midpoint(p1, p2);
-        let mid = midpoint(mid01, mid12);
-
-        // Recurse on both halves
-        adaptive_flatten_quad(output, p0, mid01, mid, tolerance);
-        adaptive_flatten_quad(output, mid, mid12, p2, tolerance);
+    curve: [[f32; 2]; N],
+    depth: u32,
+) -> Result<(), PathFillError> {
+    if !curve.iter().copied().all(finite_point) {
+        return Err(PathFillError::InvalidSource);
     }
-}
 
-/// Adaptively flatten a cubic Bézier curve.
-///
-/// Subdivides the curve until the maximum deviation from the true curve
-/// is less than the specified tolerance.
-fn adaptive_flatten_cubic(
-    output: &mut Vec<[f32; 2]>,
-    p0: [f32; 2],
-    p1: [f32; 2],
-    p2: [f32; 2],
-    p3: [f32; 2],
-    tolerance: f32,
-) {
-    // Compute the deviation: max distance from control points to the line p0-p3
-    let deviation = cubic_deviation(p0, p1, p2, p3);
-
-    if deviation <= tolerance {
-        // Curve is flat enough, just output the endpoint
-        output.push(p3);
-    } else {
-        // Subdivide at t=0.5 using de Casteljau's algorithm
-        let mid01 = midpoint(p0, p1);
-        let mid12 = midpoint(p1, p2);
-        let mid23 = midpoint(p2, p3);
-        let mid012 = midpoint(mid01, mid12);
-        let mid123 = midpoint(mid12, mid23);
-        let mid = midpoint(mid012, mid123);
-
-        // Recurse on both halves
-        adaptive_flatten_cubic(output, p0, mid01, mid012, mid, tolerance);
-        adaptive_flatten_cubic(output, mid, mid123, mid23, p3, tolerance);
+    let start = curve[0];
+    let end = curve[N - 1];
+    let mut deviation = 0.0_f32;
+    for &control in &curve[1..N - 1] {
+        deviation = deviation.max(point_line_distance(control, start, end)?);
     }
-}
+    if deviation <= FLATTEN_TOLERANCE {
+        output.push(end);
+        return Ok(());
+    }
 
-/// Compute the deviation of a quadratic Bézier from a straight line.
-/// Returns the perpendicular distance from the control point to the line p0-p2.
-fn quad_deviation(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> f32 {
-    point_line_distance(p1, p0, p2)
-}
+    // Beyond this depth, even f64 cannot distinguish all dyadic parameters
+    // of a subdivision of [0, 1].
+    if depth >= f64::MANTISSA_DIGITS {
+        return Err(PathFillError::InvalidSource);
+    }
+    let mut left = curve;
+    let mut right = curve;
+    let mut controls = curve;
+    for level in 1..N {
+        for i in 0..N - level {
+            controls[i] = midpoint(controls[i], controls[i + 1]);
+            if !finite_point(controls[i]) {
+                return Err(PathFillError::InvalidSource);
+            }
+        }
+        left[level] = controls[0];
+        right[N - level - 1] = controls[N - level - 1];
+    }
+    if left == curve || right == curve {
+        return Err(PathFillError::InvalidSource);
+    }
 
-/// Compute the deviation of a cubic Bézier from a straight line.
-/// Returns the maximum perpendicular distance from control points to the line p0-p3.
-fn cubic_deviation(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2]) -> f32 {
-    let d1 = point_line_distance(p1, p0, p3);
-    let d2 = point_line_distance(p2, p0, p3);
-    d1.max(d2)
+    adaptive_flatten(output, left, depth + 1)?;
+    adaptive_flatten(output, right, depth + 1)
 }
 
 /// Compute the perpendicular distance from point p to the line defined by a and b.
-fn point_line_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+fn point_line_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> Result<f32, PathFillError> {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
     let len_sq = dx * dx + dy * dy;
 
-    if len_sq < 1e-10 {
-        // Degenerate line (a == b), return distance to point a
-        let px = p[0] - a[0];
-        let py = p[1] - a[1];
-        return (px * px + py * py).sqrt();
+    if !len_sq.is_finite() {
+        return Err(PathFillError::InvalidSource);
     }
-
-    // Signed area of triangle * 2 / length of base = perpendicular distance
-    let cross = (p[0] - a[0]) * dy - (p[1] - a[1]) * dx;
-    cross.abs() / len_sq.sqrt()
+    let px = p[0] - a[0];
+    let py = p[1] - a[1];
+    let distance = if len_sq < 1e-10 {
+        // Degenerate chord: use distance to the start point.
+        (px * px + py * py).sqrt()
+    } else {
+        (px * dy - py * dx).abs() / len_sq.sqrt()
+    };
+    distance
+        .is_finite()
+        .then_some(distance)
+        .ok_or(PathFillError::InvalidSource)
 }
 
 /// Compute the midpoint of two points.
@@ -909,126 +907,158 @@ fn midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
 }
 
+fn finite_point([x, y]: [f32; 2]) -> bool {
+    x.is_finite() && y.is_finite()
+}
+
 // ============================================================================
-// Monotone Polygon Triangulation
+// Simple Polygon Triangulation
 // ============================================================================
 
-/// Triangulate a simple polygon using monotone polygon triangulation.
+/// Triangulate a simple polygon with ear clipping.
 ///
-/// Assumes the input is a simple polygon (no self-intersections, no holes).
-/// Returns indices into the vertex array, with each 3 consecutive indices
-/// forming a triangle.
+/// Either input orientation is accepted. Indices refer to the original points
+/// in groups of three forming nondegenerate counter-clockwise triangles. Exact
+/// consecutive duplicates, a repeated closing point, and collinear intermediate
+/// points on a segment can be omitted.
 ///
-/// The algorithm uses ear clipping as a simple, correct approach for
-/// arbitrary simple polygons. This is sufficient for Stage 1 where
-/// correctness is prioritized over performance.
+/// Returns no indices for nonfinite, degenerate, or nonsimple input, or if a
+/// complete triangulation cannot be established.
 pub fn triangulate_monotone(poly: &[[f32; 2]]) -> Vec<u32> {
-    let n = poly.len();
-    if n < 3 {
+    if poly.len() < 3
+        || u32::try_from(poly.len()).is_err()
+        || !poly.iter().copied().all(finite_point)
+    {
         return Vec::new();
     }
 
-    let mut indices = Vec::with_capacity((n - 2) * 3);
-    let mut remaining: Vec<usize> = (0..n).collect();
-
-    // Ear clipping algorithm
-    while remaining.len() > 3 {
-        let len = remaining.len();
-        let mut found_ear = false;
-
-        for i in 0..len {
-            let prev = remaining[(i + len - 1) % len];
-            let curr = remaining[i];
-            let next = remaining[(i + 1) % len];
-
-            // Check if this vertex forms an ear (convex and no other vertices inside)
-            if is_ear(poly, &remaining, prev, curr, next) {
-                // Add the ear triangle
-                indices.push(prev as u32);
-                indices.push(curr as u32);
-                indices.push(next as u32);
-
-                // Remove the ear vertex
-                remaining.remove(i);
-                found_ear = true;
-                break;
-            }
+    let mut remaining: Vec<usize> = (0..poly.len()).collect();
+    remaining.dedup_by(|a, b| poly[*a] == poly[*b]);
+    if remaining.len() > 1 && poly[remaining[0]] == poly[*remaining.last().unwrap()] {
+        remaining.pop();
+    }
+    loop {
+        if remaining.len() < 3 {
+            return Vec::new();
         }
-
-        // Safety: if no ear found, force progress to avoid infinite loop
-        // This can happen with degenerate polygons
-        if !found_ear {
-            // Fall back to fan triangulation for remaining vertices
+        let redundant = (0..remaining.len()).find(|&i| {
+            let [a, b, c] = polygon_corner(&remaining, i).map(|index| poly[index]);
+            orientation(a, b, c) == 0.0 && within_segment_bounds(a, c, b)
+        });
+        let Some(redundant) = redundant else {
             break;
-        }
+        };
+        remaining.remove(redundant);
     }
 
-    // Triangulate remaining triangle (or degenerate case)
-    if remaining.len() == 3 {
-        indices.push(remaining[0] as u32);
-        indices.push(remaining[1] as u32);
-        indices.push(remaining[2] as u32);
-    } else if remaining.len() > 3 {
-        // Degenerate fallback: fan triangulation
-        for i in 1..remaining.len() - 1 {
-            indices.push(remaining[0] as u32);
-            indices.push(remaining[i] as u32);
-            indices.push(remaining[i + 1] as u32);
-        }
+    if !is_simple_polygon(poly, &remaining) {
+        return Vec::new();
     }
 
+    // A corner at the left supporting line of a simple polygon is convex.
+    // Its turn gives the traversal direction without summing a polygon's area.
+    let leftmost = (0..remaining.len())
+        .min_by(|&a, &b| {
+            let [ax, ay] = poly[remaining[a]];
+            let [bx, by] = poly[remaining[b]];
+            ax.total_cmp(&bx).then_with(|| ay.total_cmp(&by))
+        })
+        .expect("at least three remaining corners");
+    let [a, b, c] = polygon_corner(&remaining, leftmost).map(|index| poly[index]);
+    if orientation(a, b, c) < 0.0 {
+        remaining.reverse();
+    }
+
+    let mut indices = Vec::with_capacity((remaining.len() - 2) * 3);
+    while remaining.len() > 3 {
+        let ear = (0..remaining.len()).find_map(|i| {
+            let triangle = polygon_corner(&remaining, i);
+            is_ear(poly, &remaining, triangle).then_some((i, triangle))
+        });
+        let Some((i, triangle)) = ear else {
+            return Vec::new();
+        };
+        indices.extend(triangle.map(|index| index as u32));
+        remaining.remove(i);
+    }
+
+    let [a, b, c] = [remaining[0], remaining[1], remaining[2]];
+    if orientation(poly[a], poly[b], poly[c]) <= 0.0 {
+        return Vec::new();
+    }
+    indices.extend([a as u32, b as u32, c as u32]);
     indices
 }
 
-/// Check if vertex at index `curr` forms an ear in the polygon.
-fn is_ear(poly: &[[f32; 2]], remaining: &[usize], prev: usize, curr: usize, next: usize) -> bool {
-    let a = poly[prev];
-    let b = poly[curr];
-    let c = poly[next];
+fn polygon_corner(order: &[usize], i: usize) -> [usize; 3] {
+    let len = order.len();
+    [order[(i + len - 1) % len], order[i], order[(i + 1) % len]]
+}
 
-    // Check if the triangle is wound counter-clockwise (convex vertex)
-    if cross_2d(a, b, c) <= 0.0 {
-        return false;
-    }
+fn is_ear(poly: &[[f32; 2]], remaining: &[usize], triangle: [usize; 3]) -> bool {
+    let [a, b, c] = triangle.map(|index| poly[index]);
+    orientation(a, b, c) > 0.0
+        && remaining.iter().all(|&index| {
+            if triangle.contains(&index) {
+                return true;
+            }
+            // The diagonal must not pass through another remaining vertex.
+            let point = poly[index];
+            orientation(a, b, point) < 0.0
+                || orientation(b, c, point) < 0.0
+                || orientation(c, a, point) < 0.0
+        })
+}
 
-    // Check that no other vertex lies inside this triangle
-    for &idx in remaining {
-        if idx == prev || idx == curr || idx == next {
-            continue;
-        }
-        if point_in_triangle(poly[idx], a, b, c) {
+fn is_simple_polygon(poly: &[[f32; 2]], order: &[usize]) -> bool {
+    let len = order.len();
+    for i in 0..len {
+        let a = poly[order[i]];
+        let b = poly[order[(i + 1) % len]];
+        let next = poly[order[(i + 2) % len]];
+        // Collinear intermediate points were removed. A remaining straight-line
+        // triple doubles back and overlaps its adjacent edge.
+        if orientation(a, b, next) == 0.0 {
             return false;
         }
+        for j in i + 2..len {
+            if i == 0 && j == len - 1 {
+                continue; // First and last edges share their endpoint.
+            }
+            let c = poly[order[j]];
+            let d = poly[order[(j + 1) % len]];
+            if segments_intersect(a, b, c, d) {
+                return false;
+            }
+        }
     }
-
     true
 }
 
-/// Compute 2D cross product (z-component of 3D cross product).
-/// Positive if c is to the left of line a-b (counter-clockwise).
-fn cross_2d(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
-    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+fn segments_intersect(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> bool {
+    let abc = orientation(a, b, c);
+    let abd = orientation(a, b, d);
+    let cda = orientation(c, d, a);
+    let cdb = orientation(c, d, b);
+    let opposite = |x, y| (x > 0.0 && y < 0.0) || (x < 0.0 && y > 0.0);
+    (opposite(abc, abd) && opposite(cda, cdb))
+        || (abc == 0.0 && within_segment_bounds(a, b, c))
+        || (abd == 0.0 && within_segment_bounds(a, b, d))
+        || (cda == 0.0 && within_segment_bounds(c, d, a))
+        || (cdb == 0.0 && within_segment_bounds(c, d, b))
 }
 
-/// Check if point p is inside triangle abc using barycentric coordinates.
-fn point_in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
-    let v0 = [c[0] - a[0], c[1] - a[1]];
-    let v1 = [b[0] - a[0], b[1] - a[1]];
-    let v2 = [p[0] - a[0], p[1] - a[1]];
+fn within_segment_bounds(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> bool {
+    (a[0].min(b[0])..=a[0].max(b[0])).contains(&p[0])
+        && (a[1].min(b[1])..=a[1].max(b[1])).contains(&p[1])
+}
 
-    let dot00 = v0[0] * v0[0] + v0[1] * v0[1];
-    let dot01 = v0[0] * v1[0] + v0[1] * v1[1];
-    let dot02 = v0[0] * v2[0] + v0[1] * v2[1];
-    let dot11 = v1[0] * v1[0] + v1[1] * v1[1];
-    let dot12 = v1[0] * v2[0] + v1[1] * v2[1];
-
-    let inv_denom = 1.0 / (dot00 * dot11 - dot01 * dot01);
-    let u = (dot11 * dot02 - dot01 * dot12) * inv_denom;
-    let v = (dot00 * dot12 - dot01 * dot02) * inv_denom;
-
-    // Check if point is in triangle (with small epsilon for numerical stability)
-    const EPSILON: f32 = 1e-6;
-    u > EPSILON && v > EPSILON && (u + v) < (1.0 - EPSILON)
+/// Orient in f64 so f32 differences and products do not overflow or underflow.
+fn orientation(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f64 {
+    let [ax, ay] = a.map(f64::from);
+    let [bx, by] = b.map(f64::from);
+    let [cx, cy] = c.map(f64::from);
+    (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
 }
 
 // ============================================================================
@@ -1068,8 +1098,7 @@ impl Path {
     ///
     /// Returns `None` for paths with no drawable segments.
     pub fn build_stroke_mesh(&self, params: StrokeParams) -> Option<StrokeMesh> {
-        // Use the same flatten() as fills, then split into subpaths
-        let subpaths = split_into_subpaths(&self.commands);
+        let subpaths = split_into_subpaths(&self.commands).ok()?;
         if subpaths.is_empty() {
             return None;
         }
@@ -1131,7 +1160,7 @@ fn points_equal(a: [f32; 2], b: [f32; 2]) -> bool {
 /// - No subpath contains consecutive duplicate points.
 /// - Closed subpaths end exactly at subpath_start (no duplicate tail).
 /// - Only subpaths with >= 2 unique points are emitted.
-fn split_into_subpaths(commands: &[PathCommand]) -> Vec<Subpath> {
+fn split_into_subpaths(commands: &[PathCommand]) -> Result<Vec<Subpath>, PathFillError> {
     let mut subpaths = Vec::new();
     let mut current_points = Vec::new();
     let mut current = [0.0f32, 0.0];
@@ -1165,24 +1194,19 @@ fn split_into_subpaths(commands: &[PathCommand]) -> Vec<Subpath> {
                 current = new_point;
             }
             PathCommand::QuadTo(cx, cy, x, y) => {
-                adaptive_flatten_quad(
+                adaptive_flatten(
                     &mut current_points,
-                    current,
-                    [cx, cy],
-                    [x, y],
-                    FLATTEN_TOLERANCE,
-                );
+                    [current, [cx, cy], [x, y]],
+                    0,
+                )?;
                 current = [x, y];
             }
             PathCommand::CubicTo(c1x, c1y, c2x, c2y, x, y) => {
-                adaptive_flatten_cubic(
+                adaptive_flatten(
                     &mut current_points,
-                    current,
-                    [c1x, c1y],
-                    [c2x, c2y],
-                    [x, y],
-                    FLATTEN_TOLERANCE,
-                );
+                    [current, [c1x, c1y], [c2x, c2y], [x, y]],
+                    0,
+                )?;
                 current = [x, y];
             }
             PathCommand::Close => {
@@ -1215,7 +1239,7 @@ fn split_into_subpaths(commands: &[PathCommand]) -> Vec<Subpath> {
     // Filter out any subpaths that became too small after deduplication
     subpaths.retain(|s| s.points.len() >= 2);
 
-    subpaths
+    Ok(subpaths)
 }
 
 /// Remove consecutive duplicate points in-place.
@@ -1807,6 +1831,85 @@ mod tests {
         let indices = triangulate_monotone(&poly);
         // Square should produce 2 triangles = 6 indices
         assert_eq!(indices.len(), 6);
+    }
+
+    fn assert_simple_triangulation(poly: &[[f32; 2]], triangle_count: usize) -> Vec<u32> {
+        let signed_area_twice = |points: &[[f32; 2]]| {
+            points
+                .iter()
+                .zip(points.iter().cycle().skip(1))
+                .map(|(&[ax, ay], &[bx, by])| {
+                    f64::from(ax) * f64::from(by) - f64::from(ay) * f64::from(bx)
+                })
+                .sum::<f64>()
+        };
+        let indices = triangulate_monotone(poly);
+        assert_eq!(indices.len(), triangle_count * 3);
+        let triangle_area_twice = indices
+            .chunks_exact(3)
+            .map(|triangle| {
+                let points = [
+                    poly[triangle[0] as usize],
+                    poly[triangle[1] as usize],
+                    poly[triangle[2] as usize],
+                ];
+                let area = signed_area_twice(&points);
+                assert!(area > 0.0, "non-CCW or degenerate triangle: {points:?}");
+                area
+            })
+            .sum::<f64>();
+        assert_eq!(triangle_area_twice, signed_area_twice(poly).abs());
+        indices
+    }
+
+    #[test]
+    fn test_triangulate_convex_and_concave_in_both_orientations() {
+        let tiny = 1e-24_f32;
+        let mut convex = [[0.0, 0.0], [tiny, 0.0], [tiny, tiny], [0.0, tiny]];
+        // The inward corner blocks the proposed diagonal from [0, 6] to [6, 0].
+        let mut concave = [[0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [3.0, 3.0], [0.0, 6.0]];
+        for _ in 0..2 {
+            assert_simple_triangulation(&convex, 2);
+            assert_simple_triangulation(&concave, 3);
+            convex.reverse();
+            concave.reverse();
+        }
+    }
+
+    #[test]
+    fn test_triangulate_omits_redundant_vertices_and_keeps_original_indices() {
+        let polygon = [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 0.0],
+            [6.0, 0.0],
+            [6.0, 4.0],
+            [0.0, 4.0],
+            [0.0, 0.0],
+        ];
+        let indices = assert_simple_triangulation(&polygon, 2);
+        for corner in [0, 3, 4, 5] {
+            assert!(indices.contains(&corner));
+        }
+        assert!(indices.iter().all(|i| ![1, 2, 6].contains(i)));
+    }
+
+    #[test]
+    fn test_triangulate_refuses_invalid_polygons_without_partial_indices() {
+        let collinear = [[0.0, 0.0], [5.0, 0.0], [7.0, 0.0], [9.0, 0.0]];
+        let backtracking = [[0.0, 0.0], [6.0, 0.0], [3.0, 0.0], [3.0, 4.0], [0.0, 4.0]];
+        let crossing = [[0.0, 0.0], [6.0, 0.0], [6.0, 5.0], [3.0, -1.0], [0.0, 5.0]];
+        let touching = [[0.0, 0.0], [6.0, 0.0], [6.0, 5.0], [3.0, 0.0], [0.0, 5.0]];
+        let nonfinite = [[0.0, 0.0], [6.0, f32::NAN], [6.0, 5.0]];
+        for invalid in [
+            collinear.as_slice(),
+            &backtracking,
+            &crossing,
+            &touching,
+            &nonfinite,
+        ] {
+            assert!(triangulate_monotone(invalid).is_empty(), "{invalid:?}");
+        }
     }
 
     #[test]

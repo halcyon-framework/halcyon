@@ -6,6 +6,7 @@ use crate::core::math::{Point, RectF};
 use crate::core::paint::{self, PaintSink};
 use crate::core::scene_identity::{SceneNodeKey, SceneNodeKind};
 use crate::renderer::CustomRenderPresentationId;
+use crate::renderer::path::{FillRule, PathFillError};
 use crate::utils::id::TreeWidgetId;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
@@ -1228,6 +1229,8 @@ pub struct PathNode {
     pub path: crate::renderer::path::Path,
     pub mesh: Option<crate::renderer::path::PathMesh>,
     pub color: Color,
+    /// Fill rule for uncached source geometry (SPEC-R-004 §13).
+    pub fill_rule: FillRule,
     /// Stage 16: Stroke intent flag. `false` = fill, `true` = stroke.
     /// This is metadata only; visual behavior is identical until R-006/R-016.
     pub is_stroke: bool,
@@ -2340,6 +2343,18 @@ impl SceneBuilder {
         z_index: ZIndex,
         key: Option<SceneNodeKey>,
     ) {
+        self.push_path_with_fill_rule(path, FillRule::NonZero, color, z_index, key);
+    }
+
+    /// Emit a path whose contours are filled together under the given rule.
+    pub fn push_path_with_fill_rule(
+        &mut self,
+        path: crate::renderer::path::Path,
+        rule: FillRule,
+        color: Color,
+        z_index: ZIndex,
+        key: Option<SceneNodeKey>,
+    ) {
         #[cfg(debug_assertions)]
         self.assert_key_unique(key.as_ref());
 
@@ -2347,6 +2362,7 @@ impl SceneBuilder {
             path,
             mesh: None,
             color,
+            fill_rule: rule,
             is_stroke: false,
             debug: None,
             z_index,
@@ -2380,6 +2396,7 @@ impl SceneBuilder {
             path,
             mesh: Some(mesh),
             color,
+            fill_rule: FillRule::NonZero,
             is_stroke: true,
             debug: None,
             z_index,
@@ -2404,6 +2421,7 @@ impl SceneBuilder {
             path,
             mesh: Some(mesh),
             color,
+            fill_rule: FillRule::NonZero,
             is_stroke: false,
             debug: None,
             z_index,
@@ -2427,6 +2445,7 @@ impl SceneBuilder {
             path,
             mesh: None,
             color,
+            fill_rule: FillRule::NonZero,
             is_stroke: false,
             debug: Some(mode),
             z_index,
@@ -2451,6 +2470,7 @@ impl SceneBuilder {
             path,
             mesh: Some(mesh),
             color,
+            fill_rule: FillRule::NonZero,
             is_stroke: false,
             debug: Some(mode),
             z_index,
@@ -2486,7 +2506,7 @@ impl SceneBuilder {
                 a: la,
             };
             let scaled_path = layer.path.transformed(scale, snapped_x, snapped_y);
-            self.push_path(scaled_path, layer_color, z_index, None);
+            self.push_path_with_fill_rule(scaled_path, layer.fill_rule, layer_color, z_index, None);
         }
     }
 
@@ -3133,6 +3153,18 @@ impl PaintSink for SceneBuilder {
         key: Option<SceneNodeKey>,
     ) {
         self.push_path(path, color.into(), z_index, key);
+    }
+
+    fn push_path_with_fill_rule(
+        &mut self,
+        path: crate::renderer::path::Path,
+        rule: FillRule,
+        color: paint::Color,
+        z_index: paint::ZIndex,
+        key: Option<SceneNodeKey>,
+    ) -> Result<(), PathFillError> {
+        SceneBuilder::push_path_with_fill_rule(self, path, rule, color.into(), z_index, key);
+        Ok(())
     }
 
     fn push_stroked_path(

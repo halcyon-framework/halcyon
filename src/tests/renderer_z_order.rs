@@ -1,6 +1,7 @@
 #![cfg(debug_assertions)]
 
 mod textfield_motion_metal;
+mod compound_fill;
 
 
 use std::collections::HashMap;

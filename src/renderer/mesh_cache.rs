@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use super::path::PathMesh;
+use super::path::{FillRule, PathMesh};
 
 // ============================================================================
 // PixelSnapMode
@@ -50,8 +50,12 @@ pub struct MeshCacheKey {
     pub stroke_width_q: u32,
     /// Fill mode: true = fill, false = stroke-only.
     pub is_fill: bool,
+    /// Winding rule for the combined fill (SPEC-R-004 §13).
+    pub fill_rule: FillRule,
     /// Device pixel ratio, quantized to 0.125 steps.
     pub dpr_q: u32,
+    /// Exact effective device pixel ratio bits used for projection.
+    pub dpr_bits: u32,
     /// Pixel snap mode.
     pub snap_mode: PixelSnapMode,
 }

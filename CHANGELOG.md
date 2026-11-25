@@ -2,6 +2,12 @@
 
 All notable changes to the Halcyon UI framework.
 
+## [0.271.0-beta] — 2026-11-25
+
+- **Compound Path fills** — Preserve contour boundaries and tessellate the combined region under NonZero or EvenOdd. Disconnected shapes, holes, overlaps, and self-intersections use the same cached draw path. The registered CHECK renders both arms, keeps the gap clear, and blends once at the overlap.
+- **Path fill API** — Add `Path::try_to_mesh_with_fill_rule` and explicit fill-rule emission on `SceneBuilder` and `PaintSink`. Existing path emission and `Path::to_mesh` default to NonZero. The `core::icon::FillRule` import continues to work. Low-level `PathNode` struct literals now require `fill_rule`. `MeshCacheKey` struct literals now require `fill_rule` and `dpr_bits`.
+- **Path diagnostics and triangulation** — Generated-path edge overlays follow the projected contours. The simple-polygon index helper returns counter-clockwise triangles for either input orientation and an empty result for invalid input.
+
 ## [0.270.3-beta] — First public beta
 
 This section records the changes since the private development milestone
