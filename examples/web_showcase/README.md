@@ -1,5 +1,22 @@
 # Halcyon Web Showcase
 
+Web Showcase runs the same Rust Showcase screen as the native desktop
+application, compiled to WebAssembly.
+
+## Try the native Showcase first
+
+For a first look at Halcyon, run the [native Showcase](../showcase/README.md)
+from the Halcyon source root:
+
+```sh
+cargo run --locked -p halcyon-rs --example showcase
+```
+
+This opens a native desktop application. No browser, WebAssembly build or
+local web server is required.
+
+## Browser variant
+
 The ordinary Halcyon browser App runs the original
 [`ShowcaseScreen`](../showcase/main.rs) and draws its interface on the canvas.
 The HTML loads WASM, sizes the canvas and displays startup errors. The App
@@ -19,12 +36,12 @@ The page title reports passively observed DPR, CSS canvas size, backing pixels,
 browser viewport and configured canvas/view formats. It does not read or drive
 Halcyon widget state or schedule frames.
 
-## Build and serve locally
+## Build and serve the Web Showcase locally
 
 Use Rust and Cargo, native build tools, `cmake` on `PATH`, and Python 3.9 or
 later. The recipe was tested with Rust and Cargo 1.100.0 on Apple Silicon
-macOS. It uses the Halcyon source root with its Cargo patches and installs the
-CLI version that matches the pinned `wasm-bindgen` library.
+macOS. It uses the Halcyon source root and installs the CLI version that
+matches the pinned `wasm-bindgen` library.
 
 From the Halcyon source root:
 
