@@ -457,14 +457,26 @@ impl Screen for ProbeScreen {
                 assert_eq!(cx.app.ui_scale_status(None).admitted.get(), 1.25);
             }
         }
-        if self.stage == 1 {
-            assert!(matches!(main.text_realization().unwrap().outcome(),
-                TextRealizationOutcome::Unavailable(failure) if failure.reason == TextRealizationFailureReason::MissingGlyph));
-            assert!(!main.output_produced() && !main.submitted() && !main.presented_called());
+        let outcome = main.text_realization().unwrap().outcome();
+        let primary_text = if self.stage == 1 {
+            let TextRealizationOutcome::Degraded {
+                missing_cluster_count,
+                first_failure,
+                ..
+            } = outcome
+            else {
+                panic!("expected contained missing-cluster text at stage 1, got {outcome:?}");
+            };
+            assert_eq!(first_failure.reason, TextRealizationFailureReason::MissingGlyph);
+            assert!(*missing_cluster_count > 0);
+            assert!(!outcome.is_complete());
+            assert!(outcome.is_renderable());
+            "Degraded(MissingGlyph)"
         } else {
-            assert!(main.text_realization().unwrap().outcome().is_complete());
-            assert!(main.output_produced() && main.submitted() && main.presented_called());
-        }
+            assert!(outcome.is_complete());
+            "Complete"
+        };
+        assert!(main.output_produced() && main.submitted() && main.presented_called());
         if let Some(first) = &self.first {
             assert_ne!(first.attempt_id(), receipt.attempt_id());
             assert!(first.attempt_id().sequence() < receipt.attempt_id().sequence());
@@ -473,10 +485,15 @@ impl Screen for ProbeScreen {
             self.first = Some(receipt.clone());
         }
         println!(
-            "app_frame_realization_native: candidate={} attempt={} surfaces=2 primary_output={} secondary_output=true",
+            "app_frame_realization_native: candidate={} attempt={} surfaces=2 primary_output={} secondary_output={} primary_text={primary_text} secondary_text=Complete primary_submitted={} secondary_submitted={} primary_present_called={} secondary_present_called={}",
             candidate,
             attempt.sequence(),
-            main.output_produced()
+            main.output_produced(),
+            secondary.output_produced(),
+            main.submitted(),
+            secondary.submitted(),
+            main.presented_called(),
+            secondary.presented_called(),
         );
         #[cfg(windows)]
         if self.scale_proof && self.stage == 2 {
