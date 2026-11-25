@@ -6840,6 +6840,7 @@ struct FocusAppearanceReadings {
     paints: Cell<u32>,
     focuses: Cell<u32>,
     blurs: Cell<u32>,
+    hover_leaves: Cell<u32>,
     capture_enters: Cell<u32>,
     capture_enter_engine: Cell<Option<usize>>,
     capture_enter_mode: Cell<Option<crate::core::event::KeyboardAuthorityMode>>,
@@ -6935,6 +6936,11 @@ impl Widget for FocusAppearanceProbe {
     }
     fn on_blur(&mut self, _cx: &mut crate::core::widget::EventContext) {
         self.readings.blurs.set(self.readings.blurs.get() + 1);
+    }
+    fn on_hover_leave(&mut self, _cx: &mut crate::core::widget::EventContext) {
+        self.readings
+            .hover_leaves
+            .set(self.readings.hover_leaves.get() + 1);
     }
     fn on_capture_enter(&mut self, cx: &mut crate::core::widget::EventContext) {
         self.readings
@@ -7591,6 +7597,13 @@ fn assert_window_pointer_capture_cancellation(through_app_bridge: bool) {
         .pointer_capture_manager
         .request_capture(PointerId::MOUSE, pointer_owner)
         .unwrap();
+    let hover_owner = f.owner(3);
+    router.update_hover(
+        &mut f.tree,
+        Some(hover_owner),
+        None,
+        f.domains.primary_state_mut(),
+    );
     let before = f.frame();
     assert!(f.facts(1).focused());
     assert!(f.facts(2).pointer_captured());
@@ -7598,7 +7611,7 @@ fn assert_window_pointer_capture_cancellation(through_app_bridge: bool) {
 
     for _ in 0..2 {
         let state = if through_app_bridge {
-            crate::core::app::handle_window_focus_changed(
+            let state = crate::core::app::handle_window_focus_changed(
                 &mut f.domains,
                 &mut router,
                 &mut f.tree,
@@ -7606,7 +7619,14 @@ fn assert_window_pointer_capture_cancellation(through_app_bridge: bool) {
                 false,
                 &mut f.text,
             )
-            .unwrap()
+            .unwrap();
+            assert_eq!(
+                f.readings[3].hover_leaves.get(),
+                1,
+                "App delivers leave before domain teardown"
+            );
+            assert_eq!(state.hovered_widget, None);
+            state
         } else {
             f.domains.primary_state_mut()
         };
@@ -7629,6 +7649,12 @@ fn assert_window_pointer_capture_cancellation(through_app_bridge: bool) {
             Some((PointerId::MOUSE, CancellationReason::SystemCancel)),
         );
         assert_eq!(f.readings[1].pointer_cancels.get(), 0);
+        assert_eq!(
+            f.readings[3].hover_leaves.get(),
+            1,
+            "repeated loss cannot deliver a second leave"
+        );
+        assert_eq!(state.hovered_widget, None);
         assert_eq!(state.focus_manager.focused(), None);
         assert_eq!(
             state
@@ -7638,7 +7664,7 @@ fn assert_window_pointer_capture_cancellation(through_app_bridge: bool) {
         );
     }
     let after = f.frame();
-    assert_focus_appearance_recomposition(&before, &after, &[1, 2]);
+    assert_focus_appearance_recomposition(&before, &after, &[1, 2, 3]);
     assert!(!f.facts(1).focused());
     assert!(!f.facts(2).pointer_captured());
     assert_eq!(f.layouts(), layouts);

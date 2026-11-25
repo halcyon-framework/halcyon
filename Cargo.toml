@@ -1,6 +1,6 @@
 [package]
 name = "halcyon"
-version = "0.271.0-beta"
+version = "0.271.1-beta"
 edition = "2024"
 license = "MIT"
 description = "GPU-first retained-mode UI framework for Rust."

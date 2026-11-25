@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "halcyon"
-version = "0.271.0-beta"
+version = "0.271.1-beta"
 dependencies = [
  "arboard",
  "bitflags 2.10.0",

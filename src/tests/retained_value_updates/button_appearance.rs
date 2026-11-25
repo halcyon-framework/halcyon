@@ -1277,6 +1277,168 @@ fn button_appearance_pointer_activation_cancels_on_exit_and_window_loss() {
 }
 
 #[test]
+fn button_appearance_window_loss_retires_hover_until_pointer_moves() {
+    use crate::core::appearance::ButtonPaintCase;
+    use crate::core::event::*;
+    use crate::core::event_router::EventRouter;
+    use crate::runtime::binding_registry::BindingRegistry;
+    use crate::widgets::{button::Button, flex::Flex};
+    use std::time::Instant;
+
+    let mut tree = WidgetTree::new();
+    let clicks = Rc::new(Cell::new(0));
+    let count = clicks.clone();
+    let root = tree.create_root(Box::new(Flex::row().with_spacing(12.0)), None, 0);
+    let first = tree.add_child(
+        root,
+        Box::new(Button::with_text("Open tab").on_click(move || count.set(count.get() + 1))),
+        None,
+        0,
+    );
+    let second = tree.add_child(root, Box::new(Button::with_text("Other")), None, 0);
+    let [first_owner, second_owner] = [first, second].map(|node| tree.node(node).unwrap().id());
+    let mut domains = InteractionDomains::new();
+    let mut router = EventRouter::new();
+    let mut bindings = BindingRegistry::new();
+    let mut harness = RetainedSceneTestHarness::new();
+    let mut text = FontManagerTextEngine::new();
+    let window_id = WindowId::PRIMARY;
+    let mut route = |tree: &mut WidgetTree,
+                     domains: &mut InteractionDomains,
+                     text: &mut FontManagerTextEngine,
+                     event| {
+        assert!(domains.should_route_event(&event));
+        let state = if let FusedInputEvent::FocusChanged { focused, .. } = &event {
+            crate::core::app::handle_window_focus_changed(
+                domains,
+                &mut router,
+                tree,
+                window_id,
+                *focused,
+                text,
+            )
+            .unwrap()
+        } else {
+            domains.resolve_window_mut(window_id).unwrap()
+        };
+        router.route_input_event(tree, event, Some(root), text, None, state, &mut bindings);
+    };
+    let mut frame =
+        |tree: &mut WidgetTree, domains: &InteractionDomains, text: &mut FontManagerTextEngine| {
+            harness.frame_with_appearance(
+                tree,
+                root,
+                Constraints::loose(Size::new(320.0, 120.0)),
+                &Theme::default(),
+                text,
+                &IconRegistry::new(&[]),
+                domains,
+                window_id,
+            )
+        };
+    let appearance = |tree: &WidgetTree| {
+        [first, second].map(|node| {
+            let button = tree
+                .node(node)
+                .unwrap()
+                .widget
+                .as_any()
+                .downcast_ref::<Button>()
+                .unwrap();
+            let resolved = button.resolved_appearance().unwrap();
+            (
+                resolved.paint_case(),
+                resolved.request().input.button().pressed,
+            )
+        })
+    };
+    let move_to = |pos, delta| FusedInputEvent::PointerMove {
+        window_id,
+        time: Instant::now(),
+        pos,
+        device: PointerDevice::Mouse,
+        delta,
+        buttons: PointerButtonsState::default(),
+    };
+
+    assert!(frame(&mut tree, &domains, &mut text).scene_built);
+    let [a, b] = [first, second].map(|node| tree.get_absolute_paint_rect(node).unwrap().center());
+    let epoch = tree.node(root).unwrap().layout_epoch;
+    route(&mut tree, &mut domains, &mut text, move_to(a, (1.0, 0.0)));
+    route(
+        &mut tree,
+        &mut domains,
+        &mut text,
+        FusedInputEvent::PointerDown {
+            window_id,
+            time: Instant::now(),
+            pos: a,
+            device: PointerDevice::Mouse,
+            button: PointerButton::Primary,
+            click_count: 1,
+        },
+    );
+    route(
+        &mut tree,
+        &mut domains,
+        &mut text,
+        FusedInputEvent::PointerUp {
+            window_id,
+            time: Instant::now(),
+            pos: a,
+            device: PointerDevice::Mouse,
+            button: PointerButton::Primary,
+        },
+    );
+    assert_eq!(clicks.get(), 1);
+    assert_eq!(domains.primary_state().hovered_widget, Some(first_owner));
+    assert_eq!(
+        domains.primary_state().focus_manager.focused(),
+        Some(first_owner)
+    );
+    assert!(frame(&mut tree, &domains, &mut text).scene_built);
+    use ButtonPaintCase::{Hovered, Resting};
+    assert_eq!(appearance(&tree), [(Hovered, false), (Resting, false)]);
+
+    let focus_change = |focused| FusedInputEvent::FocusChanged {
+        window_id,
+        time: Instant::now(),
+        focused,
+    };
+    route(&mut tree, &mut domains, &mut text, focus_change(false));
+    assert_eq!(domains.primary_state().hovered_widget, None);
+    assert!(frame(&mut tree, &domains, &mut text).scene_built);
+    assert_eq!(
+        appearance(&tree),
+        [(Resting, false), (Resting, false)],
+        "loss retires the mounted Button's hover paint"
+    );
+    route(&mut tree, &mut domains, &mut text, focus_change(true));
+    assert_eq!(
+        domains.primary_state().focus_manager.focused(),
+        Some(first_owner)
+    );
+    assert!(frame(&mut tree, &domains, &mut text).scene_built);
+    assert_eq!(
+        appearance(&tree),
+        [(Resting, false), (Resting, false)],
+        "focus restoration leaves hover clear without pointer evidence"
+    );
+
+    route(
+        &mut tree,
+        &mut domains,
+        &mut text,
+        move_to(b, (b.x - a.x, b.y - a.y)),
+    );
+    assert_eq!(domains.primary_state().hovered_widget, Some(second_owner));
+    assert!(frame(&mut tree, &domains, &mut text).scene_built);
+    assert_eq!(appearance(&tree), [(Resting, false), (Hovered, false)]);
+    assert_eq!(tree.node(root).unwrap().layout_epoch, epoch);
+    assert_eq!(clicks.get(), 1);
+}
+
+#[test]
 fn button_appearance_noop_default_preserves_initial_and_instance_publication() {
     use crate::core::layout::Padding;
 

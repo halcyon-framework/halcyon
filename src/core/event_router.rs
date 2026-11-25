@@ -5537,7 +5537,8 @@ impl EventRouter {
     /// SPEC-HAL-021 Stage 4: No animation capability for scope/window-level clears.
     ///
     /// Fires on_hover_leave on the currently hovered widget (if any) and clears hover.
-    /// Called when a scope is popped or when the pointer leaves the window.
+    /// Called when a scope is popped, the pointer leaves the window, or the
+    /// window loses focus.
     ///
     /// Note: Animation capability is NOT injected here because this is not a
     /// direct hover transition from user pointer movement.
@@ -8338,6 +8339,7 @@ impl EventRouter {
                         CancellationReason::SystemCancel,
                         domain_state,
                     );
+                    self.clear_hover(tree, domain_state);
                     self.interrupt_physical_keyboard_capture(
                         tree,
                         domain_state,

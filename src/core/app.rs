@@ -7764,6 +7764,7 @@ pub(crate) fn handle_window_focus_changed<'a>(
                 crate::core::event::CancellationReason::SystemCancel,
                 state,
             );
+            event_router.clear_hover(widget_tree, state);
             if state.keyboard_mode == crate::core::event::KeyboardAuthorityMode::Capture {
                 event_router.interrupt_physical_keyboard_capture(
                     widget_tree,

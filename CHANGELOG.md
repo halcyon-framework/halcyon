@@ -2,6 +2,10 @@
 
 All notable changes to the Halcyon UI framework.
 
+## [0.271.1-beta] — 2026-11-25
+
+- **Window focus loss** — Deliver hover leave to the current widget before clearing the losing window's interaction state. Returning focus restores keyboard focus through the existing lifecycle, and a fresh pointer event establishes hover.
+
 ## [0.271.0-beta] — 2026-11-25
 
 - **Compound Path fills** — Preserve contour boundaries and tessellate the combined region under NonZero or EvenOdd. Disconnected shapes, holes, overlaps, and self-intersections use the same cached draw path. The registered CHECK renders both arms, keeps the gap clear, and blends once at the overlap.
