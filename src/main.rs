@@ -14,6 +14,7 @@ use halcyon::platform::window::{HalcyonEvent, convert_modifiers, convert_window_
 use halcyon::prelude::*;
 use halcyon::renderer::DrawPlanBuilder;
 use halcyon::widgets::screen_host::ScreenHost;
+use halcyon::winit;
 use std::sync::Arc;
 use std::sync::mpsc;
 use winit::event::{Event as WinitEvent, StartCause, WindowEvent as WinitWindowEvent};

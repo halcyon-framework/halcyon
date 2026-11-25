@@ -24,14 +24,14 @@ The Halcyon `0.270.3-beta` source tree exposes **109 Cargo examples**. The 2026-
 Run these introductory examples from the Halcyon source root.
 
 ```sh
-cargo run --locked -p halcyon --example hello_world
-cargo run --locked -p halcyon --example listview_basic
-cargo run --locked -p halcyon --example treeview_basic
+cargo run --locked -p halcyon-rs --example hello_world
+cargo run --locked -p halcyon-rs --example listview_basic
+cargo run --locked -p halcyon-rs --example treeview_basic
 ```
 
 See [Showcase](../../examples/showcase/README.md) for tab navigation and modal overlays.
 
-For same-surface Z order, run `cargo run --locked -p halcyon --example compositor_surface_order`. Its tests cover the two- and three-rectangle paint cases. [Source](../../examples/compositor_surface_order.rs)
+For same-surface Z order, run `cargo run --locked -p halcyon-rs --example compositor_surface_order`. Its tests cover the two- and three-rectangle paint cases. [Source](../../examples/compositor_surface_order.rs)
 
 The detailed inventory below is a **historical snapshot**, pinned to 2026-07-24. Its counts and individual build failures must not be read as current diagnostics.
 

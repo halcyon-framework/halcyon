@@ -6,7 +6,7 @@ mechanics through an ordinary App and Screen.
 From the Halcyon source root:
 
 ```sh
-cargo run --locked -p halcyon --example showcase
+cargo run --locked -p halcyon-rs --example showcase
 ```
 
 See the [Web Showcase](../web_showcase/README.md) for the browser variant and

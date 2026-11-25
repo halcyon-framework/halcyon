@@ -13,16 +13,22 @@ to serve the Web examples.
 From the provided Halcyon source root, run Showcase:
 
 ```sh
-cargo run --locked -p halcyon --example showcase
+cargo run --locked -p halcyon-rs --example showcase
 ```
 
-This beta is distributed as a complete source tree. The initial
-[`halcyon-rs` 0.0.0 package](https://crates.io/crates/halcyon-rs) is a notice
-of the official package identity, not an installable framework release.
-A separate Cargo application must select Halcyon's corrected `winit` source
-in its own root manifest. The standalone example in the
-[Getting started guide](docs/guide/getting-started.md#create-a-sibling-application)
-includes the exact pin and patch.
+Use the complete source checkout while the functional registry beta is pending.
+After 0.271.3-beta is published, add it from your application's Cargo root.
+
+```sh
+cargo add halcyon-rs@0.271.3-beta
+```
+
+The Rust library is named `halcyon`. A bare `cargo add halcyon-rs` selects
+the existing 0.0.0 notice while it is the only stable release.
+
+Import Halcyon's windowing types through `halcyon::winit`. Native callers
+can also use upstream `winit` pinned to `=0.30.12`. On WebAssembly, the
+`halcyon-winit` helper and upstream Winit have incompatible type identities.
 
 - [Getting started](docs/guide/getting-started.md)
 - [Documentation index](docs/guide/index.md)

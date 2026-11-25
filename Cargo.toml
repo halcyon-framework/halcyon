@@ -1,11 +1,23 @@
 [package]
-name = "halcyon"
-version = "0.271.2-beta"
+name = "halcyon-rs"
+version = "0.271.3-beta"
 edition = "2024"
 license = "MIT"
 description = "GPU-first retained-mode UI framework for Rust."
 repository = "https://github.com/halcyon-framework/halcyon"
 readme = "README.md"
+exclude = [
+    "assets/fonts/Onest/fonts/otf/**",
+    "assets/fonts/Onest/fonts/ttf/**",
+    "assets/fonts/Onest/fonts/webfonts/**",
+]
+
+[lib]
+name = "halcyon"
+
+[[bin]]
+name = "halcyon"
+path = "src/main.rs"
 
 [features]
 default = []
@@ -14,7 +26,6 @@ trace-listview = []         # Enables ListView/TabularSubstrate hit-test tracing
 render-audit = []           # Enables owner-local render cadence counters
 
 [dependencies]
-winit = "0.30.12"
 wgpu = { version = "=30.0.2", features = ["naga-ir"] }
 naga = { version = "=30.0.2", features = ["wgsl-in", "wgsl-out"] }
 bytemuck = { version = "1.24.0", features = ["derive"] }
@@ -36,6 +47,9 @@ thiserror = "2"
 web-time = "=1.1.0"
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+winit = "=0.30.12"
+
 [target.'cfg(all(not(target_os = "ios"), not(target_arch = "wasm32")))'.dependencies]
 arboard = "3.4"
 
@@ -46,6 +60,7 @@ objc2-ui-kit = { version = "0.2.2", features = ["NSAttributedString", "UIBarButt
 
 # WASM-only: glyphon for swash-based rasterization (fallback)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+winit-wasm = { package = "halcyon-winit", version = "=0.30.12", path = "vendor/winit-0.30.12" }
 glyphon = "=0.12.0"
 wasm-bindgen = "=0.2.127"
 wasm-bindgen-futures = "=0.4.77"
@@ -54,9 +69,6 @@ web-sys = { version = "=0.3.104", features = ["console", "Window", "Document", "
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wgpu = { version = "=30.0.2", features = ["fragile-send-sync-non-atomic-wasm"] }
-
-[patch.crates-io]
-winit = { path = "vendor/winit-0.30.12" }
 
 [target.'cfg(windows)'.dependencies]
 dwrote = "0.11.5"
@@ -108,7 +120,7 @@ crate-type = ["cdylib"]
 
 # Native integration fixtures use process/system APIs and the test harness.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-halcyon = { path = ".", features = ["test-harness"] }
+halcyon = { package = "halcyon-rs", path = ".", features = ["test-harness"] }
 rand = "0.8"
 sysinfo = "0.33"
 

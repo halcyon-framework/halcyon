@@ -38,6 +38,7 @@ use halcyon::core::resize_settling::ResizeSettlingManager;
 use halcyon::platform::window::Window;
 use halcyon::renderer::DrawPlanBuilder;
 use halcyon::renderer::wgpu_renderer::WgpuRenderer;
+use halcyon::winit;
 use std::collections::HashMap;
 use std::sync::Arc;
 use winit::event::{Event as WinitEvent, WindowEvent as WinitWindowEvent};

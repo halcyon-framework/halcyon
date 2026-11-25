@@ -33,7 +33,7 @@ document admits a recognized deep link once and starts its own in-memory state.
 Build from the Halcyon source root with the matching wasm-bindgen CLI (0.2.127).
 
 ```sh
-CMAKE=cmake cargo build --locked --target wasm32-unknown-unknown -p halcyon --example web_navigation_history
+CMAKE=cmake cargo build --locked --target wasm32-unknown-unknown -p halcyon-rs --example web_navigation_history
 mkdir -p target/web-navigation-history
 wasm-bindgen --target web --out-dir target/web-navigation-history --out-name halcyon_history target/wasm32-unknown-unknown/debug/examples/web_navigation_history.wasm
 cp examples/web_navigation_history/index.html target/web-navigation-history/index.html

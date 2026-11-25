@@ -1,7 +1,7 @@
 # Touch Input in a local browser
 
 The Web example runs the same [Halcyon screen](../touch_input.rs) as
-`cargo run --locked -p halcyon --example touch_input`. The App renders its
+`cargo run --locked -p halcyon-rs --example touch_input`. The App renders its
 interface on the canvas and handles browser text input and supported host
 choice pickers. The HTML hosts the canvas and reports startup errors.
 
@@ -19,7 +19,7 @@ cargo install --locked --version 0.2.127 --root target/halcyon-tools/wasm-bindge
 ```
 
 ```sh
-CMAKE=cmake cargo build --locked --target wasm32-unknown-unknown --target-dir target -p halcyon --example web_touch_input
+CMAKE=cmake cargo build --locked --target wasm32-unknown-unknown --target-dir target -p halcyon-rs --example web_touch_input
 mkdir -p target/web-touch-input
 ./target/halcyon-tools/wasm-bindgen-0.2.127/bin/wasm-bindgen --target web --out-dir target/web-touch-input --out-name halcyon_touch_input target/wasm32-unknown-unknown/debug/examples/web_touch_input.wasm
 cp examples/web_touch_input/index.html target/web-touch-input/index.html

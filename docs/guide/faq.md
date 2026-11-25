@@ -23,20 +23,19 @@ rest of the framework.
 
 ### Can I install Halcyon from crates.io?
 
-The first public beta is distributed as a complete source tree, including
-its corrected dependencies. The initial `halcyon-rs` 0.0.0 package contains
-no framework implementation or usable API. Follow [Getting started](getting-started.md)
-for the supported source-based integration route.
+Use the source checkout until the functional registry beta is published.
+After publication, use `cargo add halcyon-rs@0.271.3-beta` and import
+`halcyon` in Rust. A bare `cargo add halcyon-rs` selects the 0.0.0
+package-identity notice while it is the only stable release.
+See [Getting started](getting-started.md).
 
-### Why does a standalone application need dependency patches?
+### Which Winit types should a standalone application use?
 
-A separate application must select Halcyon's corrected `winit` source in its
-own root Cargo manifest. The source-tree examples use Halcyon's root patch.
-Halcyon uses the published `wgpu-hal` 30.0.2 release.
-
-Use the exact pin and patch in
-[Create a sibling application](getting-started.md#create-a-sibling-application).
-That section also links the `winit` source notes.
+Use `halcyon::winit` for types passed into or returned by Halcyon. On native
+targets it re-exports registry `winit` 0.30.12, including the same types a
+direct dependency on `winit = "=0.30.12"` supplies. On WebAssembly it
+re-exports `halcyon-winit` 0.30.12. The helper's types are incompatible
+with types from a direct dependency on upstream `winit` on WebAssembly.
 
 ## Architecture and design
 

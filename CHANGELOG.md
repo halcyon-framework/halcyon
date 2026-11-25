@@ -2,6 +2,12 @@
 
 All notable changes to the Halcyon UI framework.
 
+## [0.271.3-beta] — 2026-11-25
+
+- **Cargo distribution** — Prepare the `halcyon-rs` package with Rust library and executable name `halcyon`. The registry beta will use the explicit `cargo add halcyon-rs@0.271.3-beta` invocation after publication.
+- **Winit package identity** — Use registry `winit` 0.30.12 on native targets and the Apache-2.0 `halcyon-winit` 0.30.12 helper on WebAssembly. Import interoperable types through `halcyon::winit`. On WebAssembly, upstream Winit's types and the helper's types are distinct.
+- **Package contents** — Drop obsolete application-root Cargo patches and omit duplicate Onest formats from the Halcyon archive. The bundled variable font, notices, renderer resources, tests, and examples remain included.
+
 ## [0.271.2-beta] — 2026-11-25
 
 - **macOS App startup** — Show a theme-matched native “Loading…” view in the App window while required content is pending. Remove it after GPU completion and the first ready primary frame’s Present call.

@@ -35,7 +35,7 @@ cargo install --locked --version 0.2.127 --root target/halcyon-tools/wasm-bindge
 ```
 
 ```sh
-CMAKE=cmake cargo build --locked --target wasm32-unknown-unknown --target-dir target -p halcyon --example web_showcase
+CMAKE=cmake cargo build --locked --target wasm32-unknown-unknown --target-dir target -p halcyon-rs --example web_showcase
 mkdir -p target/web-showcase
 ./target/halcyon-tools/wasm-bindgen-0.2.127/bin/wasm-bindgen --target web --out-dir target/web-showcase --out-name halcyon_showcase target/wasm32-unknown-unknown/debug/examples/web_showcase.wasm
 cp examples/web_showcase/index.html target/web-showcase/index.html

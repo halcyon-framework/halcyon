@@ -15,9 +15,17 @@ governing-specs:
 
 # Getting started
 
-Start with the complete `halcyon` source distribution. The initial
-`halcyon-rs` 0.0.0 registry package contains no framework implementation
-and cannot substitute for that source tree.
+Start with the complete `halcyon` source checkout while the functional
+registry beta is pending. After publication, add the beta from your
+application's Cargo root.
+
+```sh
+cargo add halcyon-rs@0.271.3-beta
+```
+
+Use `halcyon` in Rust imports. A bare `cargo add halcyon-rs` selects the
+0.0.0 notice while it is the only stable release. Use `halcyon::winit` when
+interoperating with Halcyon's windowing types on either target.
 
 The original native and browser App walkthrough was verified against
 Halcyon 0.268.2-beta. Its source-based build route was separately qualified
@@ -30,12 +38,12 @@ tools, `cmake` on `PATH`, and Python 3.9 or later for local Web serving.
 From the Halcyon source root:
 
 ```sh
-cargo run --locked -p halcyon --example showcase
-cargo run --locked -p halcyon --example checkbox
+cargo run --locked -p halcyon-rs --example showcase
+cargo run --locked -p halcyon-rs --example checkbox
 ```
 
 Each command opens its own application. Close the first before running the
-second. These examples use Halcyon’s Cargo root and its `winit` patch.
+second.
 See the [Web Showcase](../../examples/web_showcase/README.md) and
 [Web Touch Input](../../examples/web_touch_input/README.md) for the same
 source-root workflow in a WebGPU-capable desktop browser.
@@ -43,27 +51,27 @@ source-root workflow in a WebGPU-capable desktop browser.
 For the smallest native `App`, start with [`hello_world`](../../examples/hello_world.rs). It mounts a greeting, Button and live click counter through the ordinary Screen lifecycle:
 
 ```sh
-cargo run --locked -p halcyon --example hello_world
+cargo run --locked -p halcyon-rs --example hello_world
 ```
 
 For a small data-backed view instead of the larger stress demonstrations:
 
 ```sh
-cargo run --locked -p halcyon --example listview_basic
-cargo run --locked -p halcyon --example treeview_basic
+cargo run --locked -p halcyon-rs --example listview_basic
+cargo run --locked -p halcyon-rs --example treeview_basic
 ```
 
 The three examples compiled and linked under Halcyon `0.270.2-beta` on Apple Silicon. This does not establish GUI interaction or support on other platforms. The existing [advanced ListView](../../examples/listview.rs) and [TreeView](../../examples/treeview.rs) remain separate stress demonstrations.
 
 ## Create a sibling application
 
-Place `halcyon-starter` beside `halcyon`. Create the four files below in
-`halcyon-starter`. This application has its own Cargo workspace and lockfile.
-Cargo uses the application's root manifest to select the patched `winit`
-source for browser input and clipboard handling. The exact `winit`
-dependency pins the patched version with `default-features = false`.
-Halcyon uses the published `wgpu-hal` 30.0.2 release.
-See the [winit source notes](../../vendor/winit-0.30.12/HALCYON-PATCH.md).
+Place `halcyon-starter` beside the complete `halcyon` source checkout.
+Create the four files below in `halcyon-starter`. This application has its
+own Cargo workspace and lockfile. Cargo selects the windowing dependency from
+Halcyon's manifest. Native targets use registry `winit` 0.30.12. WebAssembly
+uses the `halcyon-winit` helper, whose types are distinct from those of
+upstream Winit. After the registry beta is published, replace the starter's
+path dependency with the registry dependency from the command above.
 
 ### `Cargo.toml`
 
@@ -80,17 +88,13 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-halcyon = { path = "../halcyon" }
-winit = { version = "=0.30.12", default-features = false }
+halcyon-rs = { path = "../halcyon" }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.127"
 web-sys = { version = "=0.3.104", features = ["console", "Window", "Document", "Element", "Node"] }
-
-[patch.crates-io]
-winit = { path = "../halcyon/vendor/winit-0.30.12" }
 ```
 
 ### `src/lib.rs`
@@ -309,6 +313,10 @@ cargo check
 cargo build --locked --bin halcyon-starter
 cargo run --locked --bin halcyon-starter
 ```
+
+An existing Windows application lockfile can retain an incompatible
+`gpu-allocator` dependency. To refresh that package and its dependencies,
+run `cargo update -p gpu-allocator --recursive` in the application root.
 
 The native window opens at 440 × 320 logical pixels using the default Theme.
 Type in the TextField, open the ComboBox, and click **Test tap** to increase the

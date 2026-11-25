@@ -11,6 +11,7 @@ use halcyon::plot::series::candle::{CandleSeries, RenderCandle, Vertex};
 use halcyon::plot::series::{PhysicalRect, Series};
 use halcyon::plot::transform::Transform;
 use halcyon::plot::view_state::ViewState;
+use halcyon::winit;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;

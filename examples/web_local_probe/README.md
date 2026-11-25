@@ -17,7 +17,7 @@ cargo install --locked --version 0.2.127 --root target/halcyon-tools/wasm-bindge
 ```
 
 ```sh
-CMAKE=cmake cargo build --locked --target wasm32-unknown-unknown --target-dir target -p halcyon --example web_local_probe
+CMAKE=cmake cargo build --locked --target wasm32-unknown-unknown --target-dir target -p halcyon-rs --example web_local_probe
 mkdir -p target/web-local-probe
 ./target/halcyon-tools/wasm-bindgen-0.2.127/bin/wasm-bindgen --target web --out-dir target/web-local-probe --out-name halcyon_probe target/wasm32-unknown-unknown/debug/examples/web_local_probe.wasm
 cp examples/web_local_probe/index.html target/web-local-probe/index.html

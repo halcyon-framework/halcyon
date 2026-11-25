@@ -15,6 +15,7 @@ use halcyon::core::math::RectF;
 use halcyon::core::scene::{Color, RoundedCorners, SceneBuilder};
 use halcyon::renderer::DrawPlanBuilder;
 use halcyon::renderer::wgpu_renderer::WgpuRenderer;
+use halcyon::winit;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
