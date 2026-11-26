@@ -23,10 +23,9 @@ rest of the framework.
 
 ### Can I install Halcyon from crates.io?
 
-Use the source checkout until the functional registry beta is published.
-After publication, use `cargo add halcyon-rs@0.271.3-beta` and import
-`halcyon` in Rust. A bare `cargo add halcyon-rs` selects the 0.0.0
-package-identity notice while it is the only stable release.
+Use `cargo add halcyon-rs@0.271.3-beta` to install the published beta, then
+import `halcyon` in Rust. This source checkout prepares 0.271.4-beta for
+publication.
 See [Getting started](getting-started.md).
 
 ### Which Winit types should a standalone application use?

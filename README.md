@@ -16,15 +16,14 @@ From the provided Halcyon source root, run Showcase:
 cargo run --locked -p halcyon-rs --example showcase
 ```
 
-Use the complete source checkout while the functional registry beta is pending.
-After 0.271.3-beta is published, add it from your application's Cargo root.
+Install the published 0.271.3-beta from your application's Cargo root.
 
 ```sh
 cargo add halcyon-rs@0.271.3-beta
 ```
 
-The Rust library is named `halcyon`. A bare `cargo add halcyon-rs` selects
-the existing 0.0.0 notice while it is the only stable release.
+The Rust library is named `halcyon`. This source checkout prepares
+0.271.4-beta for publication.
 
 Import Halcyon's windowing types through `halcyon::winit`. Native callers
 can also use upstream `winit` pinned to `=0.30.12`. On WebAssembly, the
