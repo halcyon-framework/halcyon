@@ -68,18 +68,20 @@ Ctrl+C. Rebuild the WASM and rerun bindgen before reloading after Rust changes.
 
 - Native macOS uses SystemUI/CoreText; WASM uses embedded Inter and Glyphon/Swash.
   The shared shaping engine does not make these fonts or rasterizers identical.
-- All 17 tab entries remain. Plot, Plot x4 and Plot x20 explicitly report their
-  existing native `PlotRenderPool` worker requirement instead of starting
-  unsupported browser threads. No substitute plots or renderer are supplied.
-- Order Book shows its original initial book and explicitly reports that its
-  native mock feed is unavailable. Browser process CPU/memory metrics are also
-  reported unavailable. Native workers and metrics retain their original path.
+- Standalone and Dedicated expose 16 browser tabs with the original IDs and order.
+  Plot, Plot x4, Plot x20 and Order Book are absent from browser navigation and
+  compilation. Native Showcase retains all 20 tabs; Hosted retains 15 on both
+  targets. Browser process CPU/memory metrics remain unavailable.
+- Bound Timeline, Timeline Strip and SpanTree use the shared synthetic
+  demonstrations listed in the [Showcase source map](../showcase/README.md#source-map).
+  Bound Timeline's Space+drag hand tool is available in the standalone
+  `timeline_bound` example only.
 - Other sections use their original implementations. Compilation and tab
   availability alone are not a claim that every browser service, 3D path, child
   window or clipboard operation has been verified.
-- A Safari Viewport 3D observation reached an uncaptured WebGPU error and a Rust
-  abort. Browser 3D is not qualified by this example; reload to return to Inputs.
-  This example does not suppress the device error or change the 3D renderer.
+- Viewport 3D's baseline shader/pipeline, camera, sample-count switching and
+  remount path have focused WebGPU evidence. This does not establish full browser
+  conformance or support on every adapter. Device validation errors remain visible.
 - Existing browser keyboard/Capture and clipboard limitations belong to the
   framework adapter; this example does not override them.
 

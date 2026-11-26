@@ -42,6 +42,7 @@ use std::rc::Rc;
 use super::*;
 
 const CHILD_WINDOW_TEXT_LAYER: ZIndex = 7;
+const HOSTED_CHILD_UNAVAILABLE: &str = "Unavailable in hosted Showcase";
 
 /// Display-only tooltip target. Renders as a flat control cell and registers a
 /// tooltip trigger over its painted rect (SPEC-HAL-226A). No input handling.
@@ -429,6 +430,17 @@ fn child_sculpted_rect(
 }
 
 impl ShowcaseScreen {
+    pub(super) fn overlay_child_state(&self) -> String {
+        match self.composition {
+            ShowcaseComposition::Hosted => HOSTED_CHILD_UNAVAILABLE.to_string(),
+            ShowcaseComposition::Dedicated => "Unavailable in dedicated Showcase".to_string(),
+            ShowcaseComposition::Standalone => self
+                .overlay_child_window_id
+                .map(|id| format!("open {:?}", id))
+                .unwrap_or_else(|| "closed".to_string()),
+        }
+    }
+
     pub(super) fn build_overlays(&mut self, cx: &mut ScreenFrameContext<'_>, parent: NodeId) {
         let writer = self.binder.writer();
         let menu_state = self
@@ -695,6 +707,7 @@ impl ShowcaseScreen {
             child_window_button_host,
             Box::new(
                 Button::new(child_window_button_label)
+                    .with_enabled(self.composition == ShowcaseComposition::Standalone)
                     .with_binding("overlay_open_child_window", writer.clone()),
             ),
         );
@@ -706,10 +719,7 @@ impl ShowcaseScreen {
             "Live state",
             "Active surfaces, child-window state, and queue counters in one aligned readout.",
         );
-        let child_state = self
-            .overlay_child_window_id
-            .map(|id| format!("open {:?}", id))
-            .unwrap_or_else(|| "closed".to_string());
+        let child_state = self.overlay_child_state();
         let live_grid = cx.tree.add_child(
             outer,
             Box::new(
@@ -1368,7 +1378,9 @@ impl ShowcaseScreen {
         }
 
         if open_child_window {
-            if let Some(id) = self.overlay_child_window_id {
+            if self.composition != ShowcaseComposition::Standalone {
+                self.overlay_status = self.overlay_child_state();
+            } else if let Some(id) = self.overlay_child_window_id {
                 self.overlay_status = format!("Child {:?} already open", id);
             } else {
                 let id = cx.request_child_window(

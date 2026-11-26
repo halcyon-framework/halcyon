@@ -10,7 +10,7 @@ use halcyon::core::app::{
 };
 use halcyon::core::event::{FusedInputEvent, WindowId};
 use halcyon::core::layout::{Alignment, Constraints, EdgeInsets, FlexParams, LayoutResult};
-use halcyon::core::math::RectF;
+use halcyon::core::math::{RectF, Size};
 use halcyon::core::paint::Color;
 use halcyon::core::scroll_container::HorizontalScrollLink;
 use halcyon::core::signal_bus::{SignalPayload, SignalSource};
@@ -51,15 +51,25 @@ mod tab_list_view;
 mod tab_live_data;
 mod tab_navigator;
 mod tab_node_graph;
+#[cfg(not(target_arch = "wasm32"))]
 mod tab_order_book;
 mod tab_overlays;
+#[cfg(not(target_arch = "wasm32"))]
 mod tab_plot;
+#[cfg(not(target_arch = "wasm32"))]
 mod tab_plot_grids;
 mod tab_property_editor;
 mod tab_tree_view;
 mod tab_viewport_3d;
 mod tab_workbench;
 mod tip;
+
+#[path = "../temporal_demos/bound.rs"]
+mod temporal_bound;
+#[path = "../temporal_demos/span_tree.rs"]
+mod temporal_span_tree;
+#[path = "../temporal_demos/strip.rs"]
+mod temporal_strip;
 
 // ─── Section enum ────────────────────────────────────────
 //
@@ -88,6 +98,9 @@ enum Section {
     Workbench,
     NodeGraph,
     Viewport3D,
+    BoundTimeline,
+    TimelineStrip,
+    SpanTree,
 }
 
 impl Section {
@@ -110,6 +123,9 @@ impl Section {
             Section::Workbench => "Workbench",
             Section::NodeGraph => "Node Graph",
             Section::Viewport3D => "Viewport 3D",
+            Section::BoundTimeline => "Bound Timeline",
+            Section::TimelineStrip => "Timeline Strip",
+            Section::SpanTree => "SpanTree",
         }
     }
 
@@ -136,6 +152,9 @@ impl Section {
             15 => Some(Section::Workbench),
             16 => Some(Section::NodeGraph),
             17 => Some(Section::Viewport3D),
+            18 => Some(Section::BoundTimeline),
+            19 => Some(Section::TimelineStrip),
+            20 => Some(Section::SpanTree),
             _ => None,
         }
     }
@@ -159,6 +178,9 @@ impl Section {
             Section::Workbench,
             Section::NodeGraph,
             Section::Viewport3D,
+            Section::BoundTimeline,
+            Section::TimelineStrip,
+            Section::SpanTree,
         ]
     }
 }
@@ -488,9 +510,105 @@ impl Widget for LiveStat {
 
 // ─── Screen ──────────────────────────────────────────────
 
-struct ShowcaseScreen {
+enum ActiveTemporalDemo {
+    BoundTimeline(temporal_bound::BoundTimelineDemo),
+    TimelineStrip(temporal_strip::TimelineStripDemo),
+    SpanTree(temporal_span_tree::SpanTreeDemo),
+}
+
+impl ActiveTemporalDemo {
+    fn mount(mut self, tree: &mut halcyon::core::widget_tree::WidgetTree, parent: NodeId) -> Self {
+        let root = match &mut self {
+            Self::BoundTimeline(demo) => demo.mount(tree, parent),
+            Self::TimelineStrip(demo) => demo.mount(tree, parent),
+            Self::SpanTree(demo) => demo.mount(tree, parent),
+        };
+        tree.set_flex(root, FlexParams::flexible(1.0));
+        self
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShowcaseComposition {
+    Standalone,
+    Hosted,
+    Dedicated,
+}
+
+impl ShowcaseComposition {
+    fn admits(self, section: Section) -> bool {
+        if cfg!(target_arch = "wasm32")
+            && matches!(
+                section,
+                Section::Plot | Section::PlotQuad | Section::PlotDashboard | Section::OrderBook
+            )
+        {
+            return false;
+        }
+        self != Self::Hosted
+            || !matches!(
+                section,
+                Section::Plot
+                    | Section::PlotQuad
+                    | Section::PlotDashboard
+                    | Section::OrderBook
+                    | Section::Viewport3D
+            )
+    }
+}
+
+/// Reports the fixed section's horizontal overflow to its ScrollArea.
+struct HostedSectionExtent {
+    id: WidgetInternalId,
+    min_width: f32,
+}
+
+impl WidgetDowncast for HostedSectionExtent {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+impl Widget for HostedSectionExtent {
+    fn layout(
+        &mut self,
+        cx: &mut LayoutContext,
+        constraints: Constraints,
+        children: &[NodeId],
+    ) -> LayoutResult {
+        let viewport = Size::new(constraints.max_width, constraints.max_height);
+        let width = viewport.width.max(self.min_width);
+        let height = viewport.height;
+        let child = children[0];
+        cx.layout_child(child, Constraints::new(width, width, height, height));
+        cx.set_child_rect(child, RectF::new(0.0, 0.0, width, height));
+        LayoutResult::new(viewport, Size::new(width, height))
+    }
+
+    fn paint(&self, _cx: &mut PaintContext, _rect: RectF, _children: &[NodeId]) {}
+
+    fn id(&self) -> WidgetInternalId {
+        self.id
+    }
+
+    fn hit_testable(&self) -> bool {
+        false
+    }
+
+    fn needs_viewport_constraint(&self) -> bool {
+        true
+    }
+}
+
+pub(crate) struct ShowcaseScreen {
+    composition: ShowcaseComposition,
     placeholder: Label,
     current_section: Section,
+    active_temporal_demo: Option<ActiveTemporalDemo>,
     tab_sink: TabBarSink,
     breadcrumb_sink: BreadcrumbsSink,
     /// Form bindings — currently the header theme toggle's "dark_mode" key.
@@ -527,7 +645,7 @@ struct ShowcaseScreen {
     /// Latest process CPU/mem sample, written by the `sysinfo` sampler thread,
     /// read each frame by `refresh_proc_label`. The thread never touches the
     /// widget tree (SPEC-HAL-002 Pillars B/F).
-    proc_metrics: Arc<Mutex<ProcSample>>,
+    proc_metrics: Option<Arc<Mutex<ProcSample>>>,
     // Console tab streaming state (SPEC-HAL-305). `console_id` is the live
     // Console node while the Console tab is mounted; the rest drive the line
     // generator (see tab_console.rs).
@@ -548,8 +666,11 @@ struct ShowcaseScreen {
     overlay_status: String,
     overlay_child_window_id: Option<WindowId>,
     overlay_child_value: String,
+    #[cfg(not(target_arch = "wasm32"))]
     plot_render_pool: Option<Arc<halcyon::plot::PlotRenderPool>>,
+    #[cfg(not(target_arch = "wasm32"))]
     _plot_data_tx: Option<crossbeam_channel::Sender<halcyon::plot::DataUpdate>>,
+    #[cfg(not(target_arch = "wasm32"))]
     _plot_ticker_handle: Option<std::thread::JoinHandle<()>>,
     viewport_3d_id: Option<NodeId>,
     viewport_3d_fly_control_id: Option<NodeId>,
@@ -568,12 +689,31 @@ struct ShowcaseScreen {
 
 impl ShowcaseScreen {
     fn new() -> Self {
-        let proc_metrics = Arc::new(Mutex::new(ProcSample::default()));
-        #[cfg(not(target_arch = "wasm32"))]
-        spawn_proc_sampler(proc_metrics.clone());
+        Self::with_composition(ShowcaseComposition::Standalone)
+    }
+
+    #[allow(dead_code)] // Consumed by an including application.
+    pub(crate) fn new_hosted() -> Self {
+        Self::with_composition(ShowcaseComposition::Hosted)
+    }
+
+    #[allow(dead_code, reason = "Used by applications including the dedicated Showcase.")]
+    pub(crate) fn new_dedicated() -> Self {
+        Self::with_composition(ShowcaseComposition::Dedicated)
+    }
+
+    fn with_composition(composition: ShowcaseComposition) -> Self {
+        let proc_metrics = (composition == ShowcaseComposition::Standalone).then(|| {
+            let metrics = Arc::new(Mutex::new(ProcSample::default()));
+            #[cfg(not(target_arch = "wasm32"))]
+            spawn_proc_sampler(metrics.clone());
+            metrics
+        });
         Self {
+            composition,
             placeholder: Label::new(""),
             current_section: Section::InputsAndControls,
+            active_temporal_demo: None,
             tab_sink: tab_bar_sink(),
             breadcrumb_sink: breadcrumbs_sink(),
             binder: FormBinder::new(),
@@ -617,8 +757,11 @@ impl ShowcaseScreen {
             overlay_status: "No overlay action yet".to_string(),
             overlay_child_window_id: None,
             overlay_child_value: "Initial Value".to_string(),
+            #[cfg(not(target_arch = "wasm32"))]
             plot_render_pool: None,
+            #[cfg(not(target_arch = "wasm32"))]
             _plot_data_tx: None,
+            #[cfg(not(target_arch = "wasm32"))]
             _plot_ticker_handle: None,
             viewport_3d_id: None,
             viewport_3d_fly_control_id: None,
@@ -822,8 +965,8 @@ impl ShowcaseScreen {
     }
 
     fn refresh_proc_label(&self, tree: &mut halcyon::core::widget_tree::WidgetTree) {
-        if let Some(node_id) = self.proc_label_id {
-            let text = proc_status_text(&self.proc_metrics);
+        if let (Some(node_id), Some(metrics)) = (self.proc_label_id, self.proc_metrics.as_deref()) {
+            let text = proc_status_text(metrics);
             let updated = if let Some(node) = tree.node_mut(node_id) {
                 if let Some(stat) = node.widget_mut().as_any_mut().downcast_mut::<LiveStat>() {
                     stat.set_text(text)
@@ -838,10 +981,12 @@ impl ShowcaseScreen {
             }
         }
     }
-}
 
-impl Screen for ShowcaseScreen {
-    fn build<'a>(&'a mut self, cx: &'a mut ScreenFrameContext<'a>) -> &'a mut dyn Widget {
+    pub(crate) fn mount(&mut self, cx: &mut ScreenFrameContext<'_>, parent: NodeId) -> NodeId {
+        let embedded = self.composition != ShowcaseComposition::Standalone;
+        debug_assert!(self.composition.admits(self.current_section));
+        self.active_temporal_demo = None;
+        #[cfg(not(target_arch = "wasm32"))]
         if self.current_section != Section::Plot {
             self.plot_render_pool = None;
         }
@@ -880,10 +1025,18 @@ impl Screen for ShowcaseScreen {
         // paint, and the Flex stays transparent over it. The whole root surface
         // is therefore theme-reactive, so a theme switch re-themes via repaint
         // with no rebuild.
-        let panel_node = cx.mount_child(Box::new(Label::new("")));
-        let outer = cx
-            .tree
-            .add_child(panel_node, Box::new(Flex::column()), None, 0);
+        let panel_node = cx.tree.add_child(parent, Box::new(Label::new("")), None, 0);
+        let inset = if self.composition == ShowcaseComposition::Dedicated {
+            cx.app.theme.radii.l.max(2.0)
+        } else {
+            0.0
+        };
+        let outer = cx.tree.add_child(
+            panel_node,
+            Box::new(Flex::column().with_padding(EdgeInsets::all(inset))),
+            None,
+            0,
+        );
         halcyon::replace_widget!(
             cx.tree,
             panel_node,
@@ -893,17 +1046,14 @@ impl Screen for ShowcaseScreen {
         );
 
         // slot 1: header row — breadcrumbs (left) + theme toggle (top-right corner)
-        let header_row = cx.tree.add_child(
-            outer,
-            Box::new(
-                Flex::row()
-                    .with_spacing(8.0)
-                    .with_align_items(Alignment::Center)
-                    .with_padding(EdgeInsets::new(0.0, 8.0, 0.0, 0.0)),
-            ),
-            None,
-            1,
-        );
+        let mut header = Flex::row()
+            .with_spacing(8.0)
+            .with_align_items(Alignment::Center)
+            .with_padding(EdgeInsets::new(0.0, 8.0, 0.0, 0.0));
+        if embedded {
+            header = header.with_wrap();
+        }
+        let header_row = cx.tree.add_child(outer, Box::new(header), None, 1);
         let mut breadcrumbs = Breadcrumbs::new(self.breadcrumb_sink.clone());
         breadcrumbs.set_crumbs(&[
             (CrumbId(0), "Halcyon Showcase", true),
@@ -942,6 +1092,7 @@ impl Screen for ShowcaseScreen {
         let mut tab_bar = TabBar::new(self.tab_sink.clone());
         let tabs: Vec<(TabId, &str, bool)> = Section::all()
             .iter()
+            .filter(|section| self.composition.admits(**section))
             .map(|s| (s.tab_id(), s.label(), true))
             .collect();
         tab_bar.set_tabs(&tabs);
@@ -961,8 +1112,46 @@ impl Screen for ShowcaseScreen {
             .add_child(outer, Box::new(FixedSpacer::vertical(4.0)), None, 5);
 
         // slot 6: content area — always fills available space
-        let content_node = cx.tree.add_child(outer, Box::new(Flex::column()), None, 6);
+        let mut content_node = cx.tree.add_child(outer, Box::new(Flex::column()), None, 6);
         cx.tree.set_flex(content_node, FlexParams::flexible(1.0));
+        if embedded {
+            let min_width = match self.current_section {
+                Section::BoundTimeline => Some(temporal_bound::MIN_SPLIT_WIDTH),
+                // Existing Workbench navigator and workspace minima plus the split gutter.
+                Section::Workbench => Some(180.0 + 360.0 + 3.0),
+                _ => None,
+            };
+            if let Some(min_width) = min_width {
+                let scroll = cx.tree.add_child(
+                    content_node,
+                    Box::new(
+                        ScrollArea::new_unwired()
+                            .enable_vertical_scrollbar(false)
+                            .enable_horizontal_scrollbar(true),
+                    ),
+                    None,
+                    0,
+                );
+                cx.tree.set_flex(scroll, FlexParams::flexible(1.0));
+                content_node = cx.tree.add_child(
+                    scroll,
+                    Box::new(HostedSectionExtent {
+                        id: WidgetInternalId::new(),
+                        min_width,
+                    }),
+                    None,
+                    0,
+                );
+                cx.tree
+                    .node_mut(scroll)
+                    .unwrap()
+                    .widget_mut()
+                    .as_any_mut()
+                    .downcast_mut::<ScrollArea>()
+                    .unwrap()
+                    .wire_content(content_node);
+            }
+        }
 
         match self.current_section {
             Section::Display => self.build_display(cx, content_node),
@@ -979,16 +1168,10 @@ impl Screen for ShowcaseScreen {
             #[cfg(not(target_arch = "wasm32"))]
             Section::PlotDashboard => self.build_plot_dashboard(cx, content_node),
             #[cfg(target_arch = "wasm32")]
-            Section::Plot | Section::PlotQuad | Section::PlotDashboard => {
-                cx.tree.add_child(
-                    content_node,
-                    Box::new(Label::new(
-                        "Plot rendering is unavailable in this browser: the current PlotRenderPool requires native worker threads.",
-                    )),
-                    None,
-                    0,
-                );
+            Section::Plot | Section::PlotQuad | Section::PlotDashboard | Section::OrderBook => {
+                unreachable!("native-only sections are refused before mounting")
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Section::OrderBook => self.build_order_book(cx, content_node),
             Section::Workbench => self.build_workbench(cx, content_node),
             Section::NodeGraph => self.build_node_graph(cx, content_node),
@@ -996,6 +1179,18 @@ impl Screen for ShowcaseScreen {
             Section::Navigator => self.build_navigator(cx, content_node),
             Section::LiveData => self.build_live_data(cx, content_node),
             Section::Viewport3D => self.build_viewport_3d(cx, content_node),
+            Section::BoundTimeline => {
+                let demo = ActiveTemporalDemo::BoundTimeline(temporal_bound::BoundTimelineDemo::new());
+                self.active_temporal_demo = Some(demo.mount(cx.tree, content_node));
+            }
+            Section::TimelineStrip => {
+                let demo = ActiveTemporalDemo::TimelineStrip(temporal_strip::TimelineStripDemo::new());
+                self.active_temporal_demo = Some(demo.mount(cx.tree, content_node));
+            }
+            Section::SpanTree => {
+                let demo = ActiveTemporalDemo::SpanTree(temporal_span_tree::SpanTreeDemo::new());
+                self.active_temporal_demo = Some(demo.mount(cx.tree, content_node));
+            }
         }
 
         // slot 7: divider
@@ -1012,17 +1207,14 @@ impl Screen for ShowcaseScreen {
         );
         let update_rate = format!("{:.0} screen updates/s", self.updates_per_second);
 
-        let status_row = cx.tree.add_child(
-            outer,
-            Box::new(
-                Flex::row()
-                    .with_spacing(10.0)
-                    .with_align_items(Alignment::Center)
-                    .with_padding(EdgeInsets::new(3.0, 0.0, 3.0, 0.0)),
-            ),
-            None,
-            8,
-        );
+        let mut status = Flex::row()
+            .with_spacing(10.0)
+            .with_align_items(Alignment::Center)
+            .with_padding(EdgeInsets::new(3.0, 0.0, 3.0, 0.0));
+        if embedded {
+            status = status.with_wrap();
+        }
+        let status_row = cx.tree.add_child(outer, Box::new(status), None, 8);
         // Bar height = text line-height + symmetric vertical padding → a compact bar
         // with vertically-centered content. (Label paints at the TOP of its box, so
         // equal top/bottom padding is what actually centers the text.)
@@ -1053,15 +1245,23 @@ impl Screen for ShowcaseScreen {
         cx.tree.set_flex(gpu_id, FlexParams::fixed(96.0));
         cx.tree
             .add_child(status_row, Box::new(Divider::vertical()), None, 6);
-        let proc_id = cx.tree.add_child(
-            status_row,
-            Box::new(LiveStat::new(&proc_status_text(&self.proc_metrics))),
-            None,
-            7,
+        let proc_text = self.proc_metrics.as_deref().map_or_else(
+            || "Process metrics unavailable".to_string(),
+            proc_status_text,
         );
+        let proc_id =
+            cx.tree
+                .add_child(status_row, Box::new(LiveStat::new(&proc_text)), None, 7);
         self.proc_label_id = Some(proc_id);
         cx.tree.set_flex(proc_id, FlexParams::fixed(216.0));
 
+        panel_node
+    }
+}
+
+impl Screen for ShowcaseScreen {
+    fn build<'a>(&'a mut self, cx: &'a mut ScreenFrameContext<'a>) -> &'a mut dyn Widget {
+        self.mount(cx, cx.parent_node);
         &mut self.placeholder
     }
 
@@ -1077,6 +1277,9 @@ impl Screen for ShowcaseScreen {
         signal: &halcyon::core::signal_bus::SignalEnvelope,
         cx: &mut ScreenContext<'_>,
     ) -> bool {
+        if self.composition != ShowcaseComposition::Standalone {
+            return false;
+        }
         let source_window = match signal.source {
             SignalSource::Window(id) => Some(id),
             _ => None,
@@ -1136,11 +1339,14 @@ impl Screen for ShowcaseScreen {
         // Doing this in handle_input (per-event, before dispatch) misses
         // single-event activations like `i` (TextInput only, no follow-up
         // KeyUp) that set the sink during dispatch_engine_action.
-        if let Some(id) = self.tab_sink.take() {
-            if let Some(section) = Section::from_tab_id(id) {
-                self.current_section = section;
-                self.needs_rebuild = true;
-            }
+        if let Some(section) = self
+            .tab_sink
+            .take()
+            .and_then(Section::from_tab_id)
+            .filter(|&section| self.composition.admits(section))
+        {
+            self.current_section = section;
+            self.needs_rebuild = true;
         }
 
         // Poll breadcrumb sink — clicking "Halcyon Ops" goes to Dashboard
@@ -1198,6 +1404,12 @@ impl Screen for ShowcaseScreen {
     }
 
     fn update(&mut self, tree: &mut halcyon::core::widget_tree::WidgetTree) {
+        match (self.current_section, self.active_temporal_demo.as_mut()) {
+            (Section::BoundTimeline, Some(ActiveTemporalDemo::BoundTimeline(demo))) => demo.update(tree),
+            (Section::TimelineStrip, Some(ActiveTemporalDemo::TimelineStrip(demo))) => demo.update(tree),
+            (Section::SpanTree, Some(ActiveTemporalDemo::SpanTree(demo))) => demo.update(tree),
+            _ => {}
+        }
         self.engine.tick();
         if !self.gauge_ids.is_empty() || !self.core_ids.is_empty() || !self.sparkline_ids.is_empty()
         {
@@ -1243,10 +1455,7 @@ impl Screen for ShowcaseScreen {
                 .as_ref()
                 .map(|handle| if handle.is_open() { "open" } else { "closing" })
                 .unwrap_or("closed");
-            let child_state = self
-                .overlay_child_window_id
-                .map(|id| format!("open {:?}", id))
-                .unwrap_or_else(|| "closed".to_string());
+            let child_state = self.overlay_child_state();
             if let (Some(id), Some(manager)) = (
                 self.overlay_status_grid_id,
                 self.overlay_toast_manager.as_ref(),
@@ -1352,11 +1561,13 @@ impl Screen for ShowcaseScreen {
     }
 
     fn on_enter(&mut self, cx: &mut ScreenContext<'_>) {
-        menu::ensure_main_menu(cx);
+        if self.composition == ShowcaseComposition::Standalone {
+            menu::ensure_main_menu(cx);
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn default_2d_section_defers_custom_render_for_test() -> bool {
     let screen = ShowcaseScreen::new();
     screen.current_section == Section::Display && screen.plot_render_pool.is_none()
@@ -1365,6 +1576,358 @@ pub(crate) fn default_2d_section_defers_custom_render_for_test() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn showcase_appends_temporal_sections_to_the_original_tab_ids() {
+        let ids = [1, 2, 3, 12, 13, 14, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20];
+        assert_eq!(Section::all().len(), ids.len());
+        for (section, id) in Section::all().iter().copied().zip(ids) {
+            assert_eq!(section.tab_id(), TabId(id));
+            assert_eq!(Section::from_tab_id(TabId(id)), Some(section));
+        }
+        assert_eq!(
+            Section::all()[17..]
+                .iter()
+                .map(|section| section.label())
+                .collect::<Vec<_>>(),
+            ["Bound Timeline", "Timeline Strip", "SpanTree"],
+        );
+        assert_eq!(
+            ShowcaseScreen::new().current_section,
+            Section::InputsAndControls,
+        );
+    }
+
+    #[test]
+    fn showcase_remounts_only_the_selected_temporal_demo() {
+        use halcyon::core::app::AppContext;
+        use halcyon::widgets::timeline_canvas::TimelineCanvas;
+
+        let mut screen = ShowcaseScreen::new();
+        let mut app = AppContext::new(Theme::default());
+        let mut tree = WidgetTree::new();
+        let parent = tree.create_root(Box::new(Flex::column()), None, 0);
+        let mut previous = None;
+
+        for section in [
+            Section::BoundTimeline,
+            Section::TimelineStrip,
+            Section::SpanTree,
+            Section::BoundTimeline,
+            Section::TimelineStrip,
+            Section::SpanTree,
+            Section::Display,
+        ] {
+            if let Some(id) = previous {
+                let roots = tree.children(parent);
+                assert_eq!(roots.len(), 1);
+                tree.remove_node(roots[0]);
+                assert!(tree.find_node_by_widget_id(id).is_none());
+            }
+
+            screen.current_section = section;
+            let mut cx = ScreenFrameContext {
+                app: &mut app,
+                tree: &mut tree,
+                parent_node: parent,
+            };
+            screen.build(&mut cx);
+            screen.update(&mut tree);
+
+            let mut nodes = tree.children(parent);
+            assert_eq!(nodes.len(), 1);
+            let mut canvases = Vec::new();
+            while let Some(id) = nodes.pop() {
+                let node = tree.node(id).unwrap();
+                if node.widget().as_any().is::<TimelineCanvas>() {
+                    canvases.push(node.id());
+                }
+                nodes.extend(tree.children(id));
+            }
+            match (section, screen.active_temporal_demo.as_ref()) {
+                (Section::BoundTimeline, Some(ActiveTemporalDemo::BoundTimeline(_)))
+                | (Section::TimelineStrip, Some(ActiveTemporalDemo::TimelineStrip(_)))
+                | (Section::SpanTree, Some(ActiveTemporalDemo::SpanTree(_))) => {
+                    assert_eq!(canvases.len(), 1);
+                    assert_ne!(previous, Some(canvases[0]));
+                    previous = Some(canvases[0]);
+                }
+                (Section::Display, None) => assert!(canvases.is_empty()),
+                _ => panic!("wrong temporal demo mounted for {section:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn dedicated_chrome_inset_preserves_other_compositions() {
+        use halcyon::core::app::{AppContext, EngineTicker, layout_tree};
+        use halcyon::core::rect_authority::LayoutAuthorityGuard;
+        use halcyon::platform::font_manager_text_engine::FontManagerTextEngine;
+        use halcyon::widgets::screen_host::ScreenHost;
+
+        let mut ticker = EngineTicker::new(Instant::now());
+        let mut text = FontManagerTextEngine::new_with_system_ui();
+        for radius in [0.0_f32, 8.0, 16.0] {
+            for composition in [
+                ShowcaseComposition::Standalone,
+                ShowcaseComposition::Hosted,
+                ShowcaseComposition::Dedicated,
+            ] {
+                let mut theme = Theme::default();
+                theme.radii.l = radius;
+                let mut app = AppContext::new(theme.clone());
+                let mut tree = WidgetTree::new();
+                let root = tree.create_root(Box::new(ScreenHost::new()), None, 0);
+                let mut screen = ShowcaseScreen::with_composition(composition);
+                let panel = screen.mount(&mut ScreenFrameContext {
+                    app: &mut app,
+                    tree: &mut tree,
+                    parent_node: root,
+                }, root);
+                ticker.begin_frame();
+                {
+                    let _layout = LayoutAuthorityGuard::enter();
+                    layout_tree(
+                        &mut tree,
+                        root,
+                        Constraints::tight(Size::new(390.0, 844.0)),
+                        &theme,
+                        &mut text,
+                        None,
+                    );
+                }
+                let inset = if composition == ShowcaseComposition::Dedicated {
+                    radius.max(2.0)
+                } else {
+                    0.0
+                };
+                let outer = tree.children(panel)[0];
+                let outer_rect = tree.get_rect(outer).unwrap();
+                let header = tree.get_rect(tree.children(outer)[0]).unwrap();
+                let tabs = tree.get_rect(screen.tab_bar_id.unwrap()).unwrap();
+                assert_eq!((header.x, header.y), (inset, inset));
+                assert_eq!(tabs.x, inset);
+                assert_eq!(tabs.width, outer_rect.width - 2.0 * inset);
+                let status = tree.get_rect(*tree.children(outer).last().unwrap()).unwrap();
+                assert!(status.bottom() <= outer_rect.height - inset + 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn showcase_compositions_mount_under_the_supplied_parent_and_admit_their_tabs() {
+        use halcyon::core::app::{AppContext, ModalStack, ScreenStack};
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let full = [1, 2, 3, 12, 13, 14, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20];
+        #[cfg(target_arch = "wasm32")]
+        let full = [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20];
+        let hosted = [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 18, 19, 20];
+        for (mut screen, expected_ids, owns_window) in [
+            (ShowcaseScreen::new(), full.as_slice(), true),
+            (ShowcaseScreen::new_hosted(), hosted.as_slice(), false),
+            (ShowcaseScreen::new_dedicated(), full.as_slice(), false),
+        ] {
+            assert_eq!(screen.current_section, Section::InputsAndControls);
+            let mut app = AppContext::new(Theme::default());
+            let mut screens = ScreenStack::new();
+            let mut modals = ModalStack::new();
+            let mut tree = WidgetTree::new();
+            let root = tree.create_root(Box::new(Flex::column()), None, 0);
+            let parent = tree.add_child(root, Box::new(Flex::column()), None, 0);
+            let mut frame = ScreenFrameContext {
+                app: &mut app,
+                tree: &mut tree,
+                parent_node: root,
+            };
+            let panel = screen.mount(&mut frame, parent);
+            assert_eq!(tree.children(root), vec![parent]);
+            assert_eq!(tree.children(parent), vec![panel]);
+            assert!(tree.node(panel).unwrap().widget().as_any().is::<Panel>());
+            assert_eq!(screen.proc_metrics.is_some(), owns_window);
+            assert_eq!(
+                Section::all()
+                    .iter()
+                    .copied()
+                    .filter(|&section| screen.composition.admits(section))
+                    .map(|section| section.tab_id().0)
+                    .collect::<Vec<_>>(),
+                expected_ids,
+            );
+
+            let mut cx = ScreenContext::new(&mut app, &mut screens, &mut modals, Some(&mut tree));
+            screen.on_enter(&mut cx);
+            assert_eq!(cx.app.menu_model_mut().is_some(), owns_window);
+            screen.take_rebuild_flag();
+            for id in Section::all().iter().map(|section| section.tab_id().0) {
+                let previous = screen.current_section;
+                let admitted = expected_ids.contains(&id);
+                screen.tab_sink.set(Some(TabId(id)));
+                screen.flush_pending_actions(&mut cx);
+                let expected = if admitted {
+                    Section::from_tab_id(TabId(id)).unwrap()
+                } else {
+                    previous
+                };
+                assert_eq!(screen.current_section, expected);
+                assert_eq!(screen.take_rebuild_flag(), admitted);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dedicated_showcase_dispatches_and_retires_native_participants() {
+        use halcyon::core::app::{AppContext, ModalStack, ScreenStack};
+        use halcyon::renderer::wgpu_renderer::WgpuRenderer;
+
+        let renderer = pollster::block_on(WgpuRenderer::new_headless())
+            .expect("dedicated Showcase participant proof requires a native GPU");
+        let adapter = renderer.headless_adapter_info_for_test_harness().unwrap();
+        assert_eq!(adapter.backend, wgpu::Backend::Metal);
+        let mut app = AppContext::new(Theme::default());
+        app.set_gpu_resources(renderer.gpu_resources());
+        let mut screen = ShowcaseScreen::new_dedicated();
+        let mut screens = ScreenStack::new();
+        let mut modals = ModalStack::new();
+        let mut tree = WidgetTree::new();
+        let root = tree.create_root(Box::new(Flex::column()), None, 0);
+        let parent = tree.add_child(root, Box::new(Flex::column()), None, 0);
+        let mut mounted = None;
+        let mut previous_participants = Vec::new();
+        let mut previous_plot_pool = None;
+
+        for section in Section::all().iter().copied().chain([
+            Section::Viewport3D,
+            Section::Display,
+            Section::Viewport3D,
+            Section::InputsAndControls,
+        ]) {
+            screen.tab_sink.set(Some(section.tab_id()));
+            let mut cx = ScreenContext::new(&mut app, &mut screens, &mut modals, Some(&mut tree));
+            screen.flush_pending_actions(&mut cx);
+            assert_eq!(screen.current_section, section);
+            assert!(screen.take_rebuild_flag());
+
+            if let Some(panel) = mounted.take() {
+                tree.remove_node(panel);
+                assert!(tree.children(parent).is_empty());
+                for &id in &previous_participants {
+                    assert!(tree.find_node_by_widget_id(id).is_none());
+                }
+            }
+            let mut frame = ScreenFrameContext {
+                app: &mut app,
+                tree: &mut tree,
+                parent_node: root,
+            };
+            let panel = screen.mount(&mut frame, parent);
+            assert_eq!(tree.children(parent), vec![panel]);
+            screen.update(&mut tree);
+            if let Some(pool) = previous_plot_pool.take() {
+                assert!(std::sync::Weak::upgrade(&pool).is_none());
+            }
+
+            let mut participants = Vec::new();
+            let mut pending = vec![panel];
+            while let Some(id) = pending.pop() {
+                let node = tree.node(id).unwrap();
+                if node.widget().custom_render_admission().is_some() {
+                    participants.push(node.id());
+                }
+                pending.extend(tree.children(id));
+            }
+            let expected = match section {
+                Section::Plot | Section::Viewport3D => 1,
+                Section::PlotQuad => 4,
+                Section::PlotDashboard => 20,
+                _ => 0,
+            };
+            assert_eq!(participants.len(), expected, "{section:?}");
+            assert!(participants.iter().all(|id| !previous_participants.contains(id)));
+            assert_eq!(screen.viewport_3d_id.is_some(), section == Section::Viewport3D);
+            assert_eq!(screen.plot_render_pool.is_some(), section == Section::Plot);
+            previous_participants = participants;
+            previous_plot_pool = screen.plot_render_pool.as_ref().map(Arc::downgrade);
+            mounted = Some(panel);
+        }
+    }
+
+    #[test]
+    fn only_standalone_showcase_owns_child_windows() {
+        use halcyon::core::app::{AppContext, ModalStack, ScreenStack};
+        use halcyon::core::signal_bus::{SignalEnvelope, SignalKind, SignalTarget};
+
+        for (mut screen, owns_window, child_state) in [
+            (ShowcaseScreen::new(), true, "closed"),
+            (ShowcaseScreen::new_hosted(), false, "Unavailable in hosted Showcase"),
+            (
+                ShowcaseScreen::new_dedicated(),
+                false,
+                "Unavailable in dedicated Showcase",
+            ),
+        ] {
+            screen.current_section = Section::Overlays;
+            let mut app = AppContext::new(Theme::default());
+            let mut tree = WidgetTree::new();
+            let root = tree.create_root(Box::new(Flex::column()), None, 0);
+            let mut frame = ScreenFrameContext {
+                app: &mut app,
+                tree: &mut tree,
+                parent_node: root,
+            };
+            let panel = screen.mount(&mut frame, root);
+            let mut pending = vec![panel];
+            let mut launch_enabled = None;
+            while let Some(id) = pending.pop() {
+                let node = tree.node(id).unwrap();
+                if node
+                    .widget()
+                    .as_any()
+                    .downcast_ref::<Label>()
+                    .is_some_and(|label| label.text == "Open Child Window")
+                {
+                    let button = tree.node(node.parent().unwrap()).unwrap();
+                    launch_enabled = Some(
+                        button.widget().as_any().downcast_ref::<Button>().unwrap().is_enabled(),
+                    );
+                }
+                pending.extend(tree.children(id));
+            }
+            assert_eq!(launch_enabled, Some(owns_window));
+            assert_eq!(screen.overlay_child_state(), child_state);
+
+            let writer = screen.binder.writer();
+            writer.set_bool(writer.intern("overlay_open_child_window"), true);
+            let mut screens = ScreenStack::new();
+            let mut modals = ModalStack::new();
+            let mut cx = ScreenContext::new(&mut app, &mut screens, &mut modals, Some(&mut tree));
+            screen.flush_pending_actions(&mut cx);
+            let requests = cx.app.take_child_window_requests();
+            if owns_window {
+                assert!(screen.overlay_child_window_id.is_some());
+                assert_eq!(requests.len(), 1);
+            } else {
+                assert!(screen.overlay_child_window_id.is_none());
+                assert_eq!(screen.overlay_status, child_state);
+                assert!(requests.is_empty());
+            }
+            screen.flush_pending_actions(&mut cx);
+            assert!(cx.app.take_child_window_requests().is_empty());
+            let signal = SignalEnvelope {
+                source: SignalSource::Window(screen.overlay_child_window_id.unwrap_or(WindowId(42))),
+                target: SignalTarget::Window(WindowId::PRIMARY),
+                kind: SignalKind::Response,
+                payload: SignalPayload::DialogConfirm { value: Some("Confirmed".to_string()) },
+            };
+            assert_eq!(screen.handle_signal(&signal, &mut cx), owns_window);
+            assert_eq!(screen.overlay_child_window_id, None);
+            assert_eq!(
+                screen.overlay_child_value,
+                if owns_window { "Confirmed" } else { "Initial Value" },
+            );
+        }
+    }
 
     #[test]
     fn showcase_defaults_three_d_navigation_to_fly() {

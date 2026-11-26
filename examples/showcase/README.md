@@ -1,7 +1,7 @@
 # Halcyon Showcase
 
-Showcase demonstrates the composition of Halcyon's widgets and application
-mechanics through an ordinary App and Screen.
+Showcase has 20 native tabs and 16 WASM tabs demonstrating Halcyon's widgets and application mechanics
+through an ordinary App and Screen.
 
 From the Halcyon source root:
 
@@ -14,7 +14,7 @@ its platform boundaries.
 
 ## Source map
 
-The following source map was originally checked against Halcyon
+The original source map was checked against Halcyon
 `0.230.3-beta`, revision `2781438a361874ed52068ec859a7ef29c2e9d0e0`.
 The map is explanatory, not a framework specification. Current behavior
 follows the source and governing specifications.
@@ -38,6 +38,37 @@ follows the source and governing specifications.
 | Workbench | [tab_workbench.rs](tab_workbench.rs) |
 | Node Graph | [tab_node_graph.rs](tab_node_graph.rs) |
 | Viewport 3D | [tab_viewport_3d.rs](tab_viewport_3d.rs) |
+| Bound Timeline | [temporal_demos/bound.rs](../temporal_demos/bound.rs) |
+| Timeline Strip | [temporal_demos/strip.rs](../temporal_demos/strip.rs) |
+| SpanTree | [temporal_demos/span_tree.rs](../temporal_demos/span_tree.rs) |
+
+The three temporal tabs share their synthetic demonstrations with the standalone
+`timeline_bound`, `timeline_strip` and `span_tree` examples. Bound Timeline pairs
+the Task tree with a bound timeline. Timeline Strip runs the free-mode release
+train, and SpanTree shows one level of a synthetic trace with immediate frame
+fit on drill-in and zoom-out. Bound Timeline's Space+drag hand tool is available
+in the standalone `timeline_bound` example only. In Showcase, Space activates
+the focused control.
+
+## Composed Showcase
+
+An application including `main.rs` can construct `ShowcaseScreen::new_hosted()`
+and call `mount(cx, parent)` during its ordinary Screen build. The including
+Screen keeps the live composition in its application tree and delegates the
+Showcase's Screen hooks. The host supplies the available area and its App theme.
+
+Hosted mode has 15 tabs on both targets. The three Plot tabs and Order Book
+are native-only; Viewport 3D remains available in standalone and dedicated mode
+on both targets. An including
+Screen can use `ShowcaseScreen::new_dedicated()` with the same `mount(cx, parent)`
+seam for the same 20 native or 16 WASM tabs. It starts on Inputs and Controls and
+follows the platform boundaries of the standalone entries.
+
+Both composed modes wrap headers and status values within the available width.
+Bound Timeline and Workbench can scroll horizontally at their existing section
+geometry. The parent owns the subtree's removal and delegates the Showcase hooks
+only while it is live. Process metrics and native child-window launch report
+unavailable in these modes, and the parent App owns its main menu.
 
 ## Existing integration examples
 
