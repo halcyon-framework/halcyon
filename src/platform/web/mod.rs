@@ -234,6 +234,36 @@ impl BrowserAppLoop {
             .map(|_| ())
     }
 
+    pub(crate) fn refuse_startup(
+        self,
+        window: &winit::window::Window,
+        choice_overlay: Option<web_sys::HtmlElement>,
+    ) {
+        if let Some(canvas) = window.canvas() {
+            canvas.remove();
+        }
+        if let Some(overlay) = choice_overlay {
+            overlay.remove();
+        }
+
+        // Use the bootstrap slot to reach its active loop without installing input bridges.
+        let previous = self.handler.replace(Some(Box::new(|event, active| {
+            match (event, active) {
+                (AppLoopEvent::Native(Event::LoopExiting), _) => {
+                    web_sys::console::debug_1(
+                        &"Halcyon browser bootstrap exited after GPU initialization refusal".into(),
+                    );
+                }
+                (_, Some(active)) if !active.exiting() => active.exit(),
+                _ => {}
+            }
+        })));
+        assert!(previous.is_none(), "GPU startup refusal precedes runtime installation");
+        if self.proxy.send_event(()).is_err() {
+            self.handler.replace(None);
+        }
+    }
+
     pub(crate) fn install(
         self,
         window: &winit::window::Window,

@@ -1666,12 +1666,127 @@ fn should_use_cpu_fallback(adapter: &wgpu::Adapter) -> bool {
     false
 }
 
+/// A refusal at the GPU initialization boundary for a window.
+#[derive(Debug, thiserror::Error)]
+pub enum RendererInitError {
+    #[error("Unable to create the GPU surface.")]
+    SurfaceCreation(#[from] wgpu::CreateSurfaceError),
+    #[error("No compatible GPU adapter is available.")]
+    AdapterUnavailable(#[from] wgpu::RequestAdapterError),
+    #[error("Unable to create the GPU device.")]
+    DeviceCreation(#[from] wgpu::RequestDeviceError),
+    #[error("The GPU surface has no available texture formats.")]
+    NoSurfaceFormats,
+    #[error("The GPU surface has no available alpha modes.")]
+    NoSurfaceAlphaModes,
+}
+
+fn select_initial_surface_capabilities(
+    capabilities: &wgpu::SurfaceCapabilities,
+) -> Result<(wgpu::TextureFormat, wgpu::CompositeAlphaMode), RendererInitError> {
+    let first_format = capabilities
+        .formats
+        .first()
+        .copied()
+        .ok_or(RendererInitError::NoSurfaceFormats)?;
+    let format = capabilities
+        .format_capabilities
+        .iter()
+        .map(|capability| capability.format)
+        .filter(|format| capabilities.formats.contains(format))
+        .find(|format| format.is_srgb())
+        .unwrap_or(first_format);
+    let alpha_mode = capabilities
+        .alpha_modes
+        .first()
+        .copied()
+        .ok_or(RendererInitError::NoSurfaceAlphaModes)?;
+    Ok((format, alpha_mode))
+}
+
+#[cfg(test)]
+mod renderer_init_tests {
+    use super::{RendererInitError, select_initial_surface_capabilities};
+
+    #[test]
+    fn required_surface_capabilities() {
+        let mut capabilities = wgpu::SurfaceCapabilities {
+            formats: Vec::new(),
+            alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
+            ..Default::default()
+        };
+        assert!(matches!(
+            select_initial_surface_capabilities(&capabilities),
+            Err(RendererInitError::NoSurfaceFormats)
+        ));
+
+        capabilities.formats.push(wgpu::TextureFormat::Bgra8Unorm);
+        capabilities.alpha_modes.clear();
+        assert!(matches!(
+            select_initial_surface_capabilities(&capabilities),
+            Err(RendererInitError::NoSurfaceAlphaModes)
+        ));
+
+        capabilities.alpha_modes.push(wgpu::CompositeAlphaMode::Opaque);
+        assert!(matches!(
+            select_initial_surface_capabilities(&capabilities),
+            Ok((wgpu::TextureFormat::Bgra8Unorm, wgpu::CompositeAlphaMode::Opaque))
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn surface_creation_retains_wgpu_cause() {
+        use std::error::Error;
+        use winit::raw_window_handle::{
+            DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
+        };
+
+        struct UnavailableWindow;
+
+        impl HasWindowHandle for UnavailableWindow {
+            fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+                Err(HandleError::Unavailable)
+            }
+        }
+
+        impl HasDisplayHandle for UnavailableWindow {
+            fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+                Err(HandleError::Unavailable)
+            }
+        }
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let source = instance.create_surface(UnavailableWindow).unwrap_err();
+        let error = RendererInitError::from(source);
+        assert!(matches!(error, RendererInitError::SurfaceCreation(_)));
+        assert!(error.source().unwrap().is::<wgpu::CreateSurfaceError>());
+    }
+}
+
 impl WgpuRenderer {
+    /// Initialize the GPU renderer for a window.
+    ///
+    /// # Panics
+    ///
+    /// Panics when GPU initialization is refused. Use [Self::try_new] to
+    /// handle the refusal.
     pub async fn new(
+        window: Arc<winit::window::Window>,
+        physical_width: u32,
+        physical_height: u32,
+    ) -> Self {
+        Self::try_new(window, physical_width, physical_height)
+            .await
+            .expect("GPU renderer initialization failed")
+    }
+
+    /// Initialize the GPU renderer for a window, returning initialization refusals.
+    pub async fn try_new(
         window: Arc<winit::window::Window>,
         _physical_width: u32,
         _physical_height: u32,
-    ) -> Self {
+    ) -> Result<Self, RendererInitError> {
         let scale_factor = window.scale_factor() as f32;
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -1679,7 +1794,7 @@ impl WgpuRenderer {
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let surface = instance.create_surface(window.clone())?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -1688,8 +1803,7 @@ impl WgpuRenderer {
                 apply_limit_buckets: false,
                 force_fallback_adapter: false,
             })
-            .await
-            .unwrap();
+            .await?;
 
         #[cfg(target_os = "ios")]
         tracing::info!(adapter = ?adapter.get_info(), "iOS GPU adapter selected");
@@ -1709,8 +1823,7 @@ impl WgpuRenderer {
                 label: None,
                 trace: Default::default(),
             })
-            .await
-            .unwrap();
+            .await?;
 
         #[cfg(target_arch = "wasm32")]
         device.on_uncaptured_error(Arc::new(|error| {
@@ -1723,27 +1836,20 @@ impl WgpuRenderer {
         // SPEC-HAL-081B: Query surface capabilities for format selection.
         // The temporary surface is used only for adapter/format discovery.
         // Actual render targets are registered via register_render_target().
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .format_capabilities
-            .iter()
-            .map(|capability| capability.format)
-            .filter(|format| surface_caps.formats.contains(format))
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
+        let (surface_format, default_alpha_mode) =
+            select_initial_surface_capabilities(&surface.get_capabilities(&adapter))?;
         #[cfg(target_arch = "wasm32")]
         let surface_format = web_color_attachment_format(surface_format);
 
         // Store defaults for render target configuration
         let default_present_mode = wgpu::PresentMode::AutoVsync;
-        let default_alpha_mode = surface_caps.alpha_modes[0];
 
         // SPEC-HAL-081B: Drop the temporary surface - all rendering goes through
         // registered render targets. The surface was only used for adapter selection
         // and capability querying.
         drop(surface);
 
-        Self::init_core(
+        Ok(Self::init_core(
             instance,
             &adapter,
             device,
@@ -1753,7 +1859,7 @@ impl WgpuRenderer {
             default_alpha_mode,
             use_cpu_fallback,
             scale_factor,
-        )
+        ))
     }
 
     /// Create a headless WgpuRenderer without a window or surface.
@@ -6700,9 +6806,16 @@ impl WgpuRenderer {
         &self,
         window: std::sync::Arc<winit::window::Window>,
     ) -> wgpu::Surface<'static> {
-        self.instance
-            .create_surface(window)
+        self.try_create_surface_for_window(window)
             .expect("SPEC-HAL-081B: Failed to create surface for window")
+    }
+
+    /// Create a window surface for registration, returning surface creation refusals.
+    pub fn try_create_surface_for_window(
+        &self,
+        window: Arc<winit::window::Window>,
+    ) -> Result<wgpu::Surface<'static>, RendererInitError> {
+        Ok(self.instance.create_surface(window)?)
     }
 
     /// SPEC-HAL-081B: Register a render target for rendering.

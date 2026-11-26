@@ -1570,6 +1570,9 @@ fn main() {
 
 /// Browser entry for the same Showcase composition and default configuration.
 #[cfg(target_arch = "wasm32")]
-pub(super) fn run_web_showcase() {
-    App::new(showcase_app_config(std::iter::empty())).run(ShowcaseScreen::new());
+pub(super) fn run_web_showcase(
+    on_gpu_init_error: impl FnOnce(halcyon::renderer::wgpu_renderer::RendererInitError) + 'static,
+) {
+    App::new(showcase_app_config(std::iter::empty()))
+        .run_with_gpu_init_error_handler(ShowcaseScreen::new(), on_gpu_init_error);
 }

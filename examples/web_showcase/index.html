@@ -37,9 +37,13 @@ const canvasAdded = new MutationObserver(() => {
 });
 canvasAdded.observe(document.body, { childList: true });
 try {
-    if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
-    const { default: init } = await import('./halcyon_showcase.js');
-    await init();
+    if (!navigator.gpu) {
+        canvasAdded.disconnect();
+        failure('WebGPU is unavailable in this browser. Use a browser with WebGPU enabled.');
+    } else {
+        const { default: init } = await import('./halcyon_showcase.js');
+        await init();
+    }
 } catch (error) {
     failure(error);
 }

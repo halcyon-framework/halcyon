@@ -18,7 +18,7 @@ pub fn browser_start() {
         report_error(&error.to_string());
     }
     std::panic::set_hook(Box::new(|info| report_error(&info.to_string())));
-    showcase::run_web_showcase();
+    showcase::run_web_showcase(report_gpu_init_error);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -48,11 +48,30 @@ impl Drop for BrowserErrors {
 #[cfg(target_arch = "wasm32")]
 fn report_error(message: &str) {
     web_sys::console::error_1(&message.into());
+    show_error(message, false);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn report_gpu_init_error(error: halcyon::renderer::wgpu_renderer::RendererInitError) {
+    use halcyon::renderer::wgpu_renderer::RendererInitError;
+
+    let message = match &error {
+        RendererInitError::AdapterUnavailable(_) => {
+            "No compatible WebGPU adapter is available. Check your browser's WebGPU support and hardware acceleration.".to_owned()
+        }
+        _ => error.to_string(),
+    };
+    web_sys::console::error_1(&format!("Halcyon GPU initialization failed: {error:?}").into());
+    show_error(&message, true);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn show_error(message: &str, replace_message: bool) {
     if let Some(output) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id("boot-error"))
     {
-        if output.text_content().is_none_or(|text| text.is_empty()) {
+        if replace_message || output.text_content().is_none_or(|text| text.is_empty()) {
             output.set_text_content(Some(message));
         }
         output.remove_attribute("hidden").unwrap_or_else(|error| {

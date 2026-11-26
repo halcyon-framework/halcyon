@@ -2,6 +2,11 @@
 
 All notable changes to the Halcyon UI framework.
 
+## [0.271.4-beta] — 2026-11-26
+
+- **GPU startup refusal** — Add `RendererInitError` and fallible renderer and window-surface constructors. `App::run` reports a refusal and ends startup before Screen entry. `App::run_with_gpu_init_error_handler` delivers the original typed failure to the caller.
+- **Web Showcase startup errors** — Show a short message when the browser lacks WebGPU or initialization is refused. Keep the underlying diagnosis in the console, and retire the failed App's bootstrap and startup nodes.
+
 ## [0.271.3-beta] — 2026-11-25
 
 - **Cargo distribution** — Prepare the `halcyon-rs` package with Rust library and executable name `halcyon`. The registry beta will use the explicit `cargo add halcyon-rs@0.271.3-beta` invocation after publication.

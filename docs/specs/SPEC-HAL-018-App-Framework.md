@@ -656,3 +656,86 @@ atomic Present or global renderer gate is added. Existing §16 required-content
 readiness and qualifying primary output still govern initial reveal. Admission
 of an App value, target readiness, successful submission and observed display
 remain distinct; implementation must report only the evidence it actually has.
+
+# 18. GPU initialization failure — Binding Addition (2026-11-26)
+
+**Status: Accepted for implementation.** This narrowly reopens the
+initial renderer construction and initial window-surface creation
+boundaries of HAL-081A/081B. Their ownership, registration, render
+execution and presentation contracts remain unchanged. Sections 16 and
+16.1 retain their successful startup behavior.
+
+GPU availability is an external startup condition, not a framework
+invariant. A returned failure to create a surface, obtain a compatible
+adapter, or request a device, or an empty required surface capability
+list, must not panic on the canonical App startup path.
+
+The renderer owns the following public additive API, in
+`renderer::wgpu_renderer`:
+
+- `RendererInitError`, a typed error with variants
+  `SurfaceCreation(wgpu::CreateSurfaceError)`,
+  `AdapterUnavailable(wgpu::RequestAdapterError)`,
+  `DeviceCreation(wgpu::RequestDeviceError)`,
+  `NoSurfaceFormats` and `NoSurfaceAlphaModes`.
+  Preserve the original typed causes through Error::source, with
+  concise human-readable Display descriptions.
+- `WgpuRenderer::try_new`, with the existing new constructor's
+  arguments and `Result<Self, RendererInitError>` as its async result.
+- `WgpuRenderer::try_create_surface_for_window`, with the existing
+  surface constructor's arguments and
+  `Result<wgpu::Surface<'static>, RendererInitError>` as its result.
+
+The existing `new` and `create_surface_for_window` signatures remain
+compatibility wrappers with their documented infallible/panic behavior;
+they delegate to the fallible constructors. The canonical App uses the
+fallible constructors for both initial surface creations. Headless
+construction and ordinary later surface lifecycle are unchanged.
+Preserve the current backend selection, adapter/device requirements and
+nonempty capability-selection policy. Do not add another adapter query,
+fallback renderer, retry, forced software adapter, or dependency change.
+
+`App::run` retains its signature and scheduling semantics. Add
+`App::run_with_gpu_init_error_handler<S: Screen + 'static>`, accepting
+the screen and an owned `impl FnOnce(RendererInitError) + 'static`.
+It follows the same App startup path and invokes that callback exactly
+once on a GPU initialization refusal and never on successful startup.
+The existing run delegates with a default diagnostic handler (error
+tracing, with native stderr or browser console if no enabled subscriber).
+No global callback, static error slot or AppContext authority is added.
+
+An initialization refusal occurs before Screen construction/entry,
+widget mounting, input-bridge installation, or presentation. Drop
+partial renderer resources and the startup window/presentation.
+On macOS request exit on the existing active event loop without
+installing the runtime handler; tolerate the remaining exit callbacks.
+Other native targets release their unstarted loop/window. On Web use
+the existing bootstrap's callback slot and proxy to request terminal
+exit on its own active event loop, without installing the App runtime.
+Release its pending resources and remove only the canvas and sibling
+overlay created for that App. An already closed loop needs no second
+exit request. Deliver the original initialization error once, even if
+the bootstrap is already closed. No pending loading UI, replay of input,
+background frame loop, fake successful frame or automatic restart.
+
+The caller owns failure presentation. Web Showcase supplies the typed
+callback and displays a concise, comprehensible startup failure in its
+existing host error panel; detailed underlying diagnostics go to the
+browser console. Distinguish no compatible WebGPU adapter from failure
+to create a rendering surface/device. Do not infer unsupported hardware
+from an adapter refusal. Its HTML's existing absence-of-WebGPU check
+also displays a readable message without a stack trace. Real unexpected
+panics retain the existing diagnostics. No DOM policy is introduced into
+the renderer.
+
+Qualification: verify returned error classification and the empty
+capability cases; exercise the canonical browser startup with WebGPU
+API present but no available adapter, and the existing no-API case.
+Observe the error once, no panic, no Screen entry, no installed App
+runtime, and termination of the failed bootstrap. Verify ordinary
+successful native and Web startup through the existing example paths.
+Where a device/surface refusal is tested by a deterministic boundary
+fixture rather than actual hardware, identify that evidence accordingly.
+Do not require a new general fault-injection system. This addition
+does not define recovery from device loss, runtime GPU validation
+failures, or arbitrary programming errors.

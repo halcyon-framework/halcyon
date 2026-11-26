@@ -1,4 +1,17 @@
 use super::*;
+use crate::renderer::wgpu_renderer::RendererInitError;
+
+fn report_gpu_init_error(error: RendererInitError) {
+    if tracing::enabled!(target: "halcyon::core::app", tracing::Level::ERROR) {
+        tracing::error!(target: "halcyon::core::app", %error, cause = ?error, "GPU initialization failed");
+    } else {
+        let message = format!("Halcyon GPU initialization failed: {error} {error:?}");
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::error_1(&message.into());
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("{message}");
+    }
+}
 
 impl App {
     /// Create a new App with the given configuration
@@ -12,13 +25,30 @@ impl App {
     /// asynchronous GPU initialization and transfers the same loop to its host.
     /// The screen's `build()` method will be called to construct the widget tree.
     pub fn run<S: Screen + 'static>(self, screen: S) {
-        #[cfg(target_arch = "wasm32")]
-        wasm_bindgen_futures::spawn_local(self.run_async(screen));
-        #[cfg(not(target_arch = "wasm32"))]
-        pollster::block_on(self.run_async(screen));
+        self.run_with_gpu_init_error_handler(screen, report_gpu_init_error);
     }
 
-    pub(super) async fn run_async<S: Screen + 'static>(self, screen: S) {
+    /// Run the application with a callback for GPU initialization refusal.
+    ///
+    /// The callback receives the original [RendererInitError] once on refusal.
+    /// Native platforms block as in [Self::run]. On Web, the callback runs
+    /// from the asynchronous startup path.
+    pub fn run_with_gpu_init_error_handler<S: Screen + 'static>(
+        self,
+        screen: S,
+        on_gpu_init_error: impl FnOnce(RendererInitError) + 'static,
+    ) {
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(self.run_async(screen, on_gpu_init_error));
+        #[cfg(not(target_arch = "wasm32"))]
+        pollster::block_on(self.run_async(screen, on_gpu_init_error));
+    }
+
+    pub(super) async fn run_async<S: Screen + 'static>(
+        self,
+        screen: S,
+        on_gpu_init_error: impl FnOnce(RendererInitError) + 'static,
+    ) {
         use crate::platform::window::{Window, create_app_event_loop};
         use std::sync::Arc;
 
@@ -28,13 +58,13 @@ impl App {
             use winit::event::{Event, StartCause};
 
             let event_loop_proxy = event_loop.create_proxy();
-            let mut initial = Some((self, screen));
+            let mut initial = Some((self, screen, on_gpu_init_error));
             let mut event_handler = None;
             #[allow(deprecated)]
             event_loop
                 .run(move |event, active| {
                     if matches!(event, Event::NewEvents(StartCause::Init))
-                        && let Some((app, screen)) = initial.take()
+                        && let Some((app, screen, on_gpu_init_error)) = initial.take()
                     {
                         // Winit queues creation callbacks while it is dispatching Init.
                         let window = Window::create_hidden_on_active_loop(
@@ -49,18 +79,26 @@ impl App {
                         );
                         window.winit_window.set_visible(true);
                         tracing::debug!(target: "halcyon::native_startup", event = "loading_shown");
-                        event_handler = Some(pollster::block_on(app.create_event_handler(
+                        match pollster::block_on(app.create_event_handler(
                             screen,
                             Arc::new(window.winit_window),
                             event_loop_proxy.clone(),
                             window.scale_factor,
                             Some(presentation),
-                        )));
+                        )) {
+                            Ok(handler) => event_handler = Some(handler),
+                            Err(error) => {
+                                active.exit();
+                                on_gpu_init_error(error);
+                                return;
+                            }
+                        }
                     }
-                    let handler = event_handler
-                        .as_mut()
-                        .expect("macOS App must receive Init before other events");
-                    handler(AppLoopEvent::Native(event), Some(active));
+                    if let Some(handler) = event_handler.as_mut() {
+                        handler(AppLoopEvent::Native(event), Some(active));
+                    } else {
+                        assert!(initial.is_none(), "macOS App must receive Init before other events");
+                    }
                 })
                 .unwrap();
         }
@@ -91,13 +129,27 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             let browser_window = window.clone();
 
-            let event_handler = self.create_event_handler(
+            let event_handler = match self.create_event_handler(
                 screen,
                 window,
                 event_loop_proxy,
                 #[cfg(not(target_arch = "wasm32"))]
                 platform_density,
-            ).await;
+            ).await {
+                Ok(handler) => handler,
+                Err(error) => {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        browser_loop.refuse_startup(browser_window.as_ref(), choice_overlay);
+                        drop(browser_window);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    drop(event_loop);
+                    on_gpu_init_error(error);
+                    return;
+                }
+            };
+            drop(on_gpu_init_error);
             #[cfg(target_arch = "wasm32")]
             if browser_loop.install(browser_window.as_ref(), choice_overlay, event_handler).is_err() {
                 tracing::error!(target: "halcyon::core::app", "Browser input listener installation failed; App runtime not activated");
@@ -121,7 +173,7 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))] mut platform_density: f32,
         #[cfg(target_os = "macos")]
         mut startup_presentation: Option<crate::platform::native_startup_macos::NativeStartupPresentation>,
-    ) -> impl FnMut(AppLoopEvent, Option<&winit::event_loop::ActiveEventLoop>) + 'static {
+    ) -> Result<impl FnMut(AppLoopEvent, Option<&winit::event_loop::ActiveEventLoop>) + 'static, RendererInitError> {
         use crate::core::event::{InteractionDomainId, Modifiers, WindowId};
         use crate::core::math::Point;
         use crate::platform::window::{
@@ -209,17 +261,17 @@ impl App {
         let physical_size = window.inner_size();
         let mut primary_physical_size = physical_size;
         let viewport_rect = startup_viewport_rect(physical_size, scale_factor);
-        let mut renderer = WgpuRenderer::new(
+        let mut renderer = WgpuRenderer::try_new(
             window.clone(),
             physical_size.width,
             physical_size.height,
-        ).await;
+        ).await?;
         renderer
             .admit_font_assets(&self.config.font_assets)
             .expect("application font admission failed before Screen construction");
 
         // SPEC-HAL-081B: Create wgpu surface for the window and register as render target
-        let wgpu_surface = renderer.create_surface_for_window(window.clone());
+        let wgpu_surface = renderer.try_create_surface_for_window(window.clone())?;
 
         // SPEC-HAL-084: DrawPlanBuilder owns Build phase (consumes SceneGraph, produces DrawPlan)
         let mut draw_plan_builder: DrawPlanBuilder<crate::compositor::MultiSurfaceContract> =
@@ -3206,6 +3258,6 @@ impl App {
                     _ => {}
                 }
             };
-        event_handler
+        Ok(event_handler)
     }
 }

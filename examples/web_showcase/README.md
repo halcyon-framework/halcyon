@@ -29,9 +29,9 @@ density. The current target still determines material admission.
 Native Showcase starts at **780 × 900 logical pixels**. The WASM canvas fills the
 browser content viewport and resizes with its window; the browser supplies DPR
 and backing size. Halcyon's ScrollArea handles excess content without outer
-document scrolling. Error-only diagnostics appear in a fixed, scrollable panel;
-the first error is preserved there and all errors reach the console. Warnings
-and normal frame receipts do not cover the widgets.
+document scrolling. The fixed, scrollable error panel shows a short message
+for GPU startup refusal, with the underlying diagnosis in the console.
+Unexpected errors retain their detailed console and panel diagnostics.
 The page title reports passively observed DPR, CSS canvas size, backing pixels,
 browser viewport and configured canvas/view formats. It does not read or drive
 Halcyon widget state or schedule frames.
