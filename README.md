@@ -27,7 +27,8 @@ The Rust library is named `halcyon`. This source checkout is the local
 
 Import Halcyon's windowing types through `halcyon::winit`. Native callers
 can also use upstream `winit` pinned to `=0.30.12`. On WebAssembly, the
-published beta and this source candidate use `halcyon-winit` 0.30.13.
+published beta uses `halcyon-winit` 0.30.13; the source candidate uses the local,
+unpublished 0.30.14 helper.
 Upstream Winit has a separate type identity on WebAssembly.
 
 - [Getting started](docs/guide/getting-started.md)

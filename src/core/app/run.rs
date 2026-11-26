@@ -523,7 +523,8 @@ impl App {
                 widget_tree.node(screen_host).expect("primary ScreenHost").id,
             ).expect("primary ScreenHost mount");
             let navigation = super::web_navigation::AppWebNavigation::bind(
-                config, &window, &mut app_root.context, mount, &coordinator,
+                config, &window, self.config.web_context_menu_enabled,
+                &mut app_root.context, mount, &coordinator,
                 &mut nav_orchestrator, &mut compositor,
             );
             (navigation, coordinator, participant)
@@ -1690,7 +1691,7 @@ impl App {
                                 && fused_events.is_empty()
                                 && deferred_scale_input.is_empty()
                                 && navigation.process(
-                                    &mut app_root.context, coordinator, &mut nav_orchestrator,
+                                    &window, &mut app_root.context, coordinator, &mut nav_orchestrator,
                                     &mut compositor,
                                 )
                             {

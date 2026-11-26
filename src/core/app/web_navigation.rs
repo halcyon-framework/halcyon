@@ -19,6 +19,7 @@ use crate::platform::web::{BrowserHistory, BrowserTraversal};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::{Rc, Weak};
+use winit::platform::web::WindowExtWebSys;
 
 const MAX_ROUTES: usize = 64;
 const MAX_PATH_BYTES: usize = 256;
@@ -37,6 +38,13 @@ pub enum WebRouteError {
     MissingRoot,
 }
 
+/// A context-menu override must name an already declared public route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum WebContextMenuPolicyError {
+    #[error("the context-menu policy route has no public path")]
+    UnmappedRoute,
+}
+
 /// The application's public path mapping for its ordinary browser App.
 ///
 /// Declare only static public routes. Paths are canonical origin-relative paths,
@@ -45,6 +53,7 @@ pub enum WebRouteError {
 pub struct WebNavigation {
     root: NavigationNodeId,
     routes: BTreeMap<NavigationNodeId, &'static str>,
+    context_menu_enabled: BTreeMap<NavigationNodeId, bool>,
     guard: Option<Box<dyn NavigationGuard>>,
 }
 
@@ -72,6 +81,7 @@ impl WebNavigation {
         Ok(Self {
             root,
             routes: map,
+            context_menu_enabled: BTreeMap::new(),
             guard: None,
         })
     }
@@ -81,6 +91,22 @@ impl WebNavigation {
     pub fn with_guard(mut self, guard: impl NavigationGuard + 'static) -> Self {
         self.guard = Some(Box::new(guard));
         self
+    }
+
+    /// Select browser context-menu availability for a declared route (HAL-018 §19.1).
+    /// Later selections replace earlier ones for the same route. Unselected routes
+    /// use `AppConfig::with_web_context_menu_enabled`'s startup value. Only the
+    /// committed navigation projection changes the canvas policy.
+    pub fn with_context_menu_enabled_for(
+        mut self,
+        route: NavigationNodeId,
+        enabled: bool,
+    ) -> Result<Self, WebContextMenuPolicyError> {
+        if !self.routes.contains_key(&route) {
+            return Err(WebContextMenuPolicyError::UnmappedRoute);
+        }
+        self.context_menu_enabled.insert(route, enabled);
+        Ok(self)
     }
 
     pub(super) fn make_host(&mut self) -> NavigationHost {
@@ -212,6 +238,8 @@ enum PendingTraversal {
 
 pub(super) struct AppWebNavigation {
     mailbox: Rc<IntentMailbox>,
+    context_menu_enabled: BTreeMap<NavigationNodeId, bool>,
+    default_context_menu_enabled: bool,
     history: Option<BrowserHistory>,
     pending: Option<PendingTraversal>,
 }
@@ -220,6 +248,7 @@ impl AppWebNavigation {
     pub(super) fn bind(
         config: WebNavigation,
         window: &winit::window::Window,
+        default_context_menu_enabled: bool,
         context: &mut AppContext,
         mount: WidgetMountToken,
         coordinator: &NavigationApplicationCoordinator,
@@ -238,6 +267,8 @@ impl AppWebNavigation {
         });
         let mut this = Self {
             mailbox,
+            context_menu_enabled: config.context_menu_enabled,
+            default_context_menu_enabled,
             history: BrowserHistory::install(window, wake),
             pending: None,
         };
@@ -245,8 +276,12 @@ impl AppWebNavigation {
             this.retire();
             tracing::warn!("public browser navigation could not bind this entry");
         }
+        let projection = orchestrator.nav_host().control_projection();
+        if this.mailbox.open.get() {
+            this.apply_context_menu_policy(window, &projection);
+        }
         context.web_navigation = Some(WebNavigationBinding {
-            projection: orchestrator.nav_host().control_projection(),
+            projection,
             mailbox: Rc::clone(&this.mailbox),
         });
         this
@@ -326,6 +361,7 @@ impl AppWebNavigation {
 
     pub(super) fn process(
         &mut self,
+        window: &winit::window::Window,
         context: &mut AppContext,
         coordinator: &NavigationApplicationCoordinator,
         orchestrator: &mut NavigationSurfaceOrchestrator,
@@ -342,6 +378,7 @@ impl AppWebNavigation {
                 .as_mut()
                 .expect("bound Web navigation projection");
             binding.projection = orchestrator.nav_host().control_projection();
+            self.apply_context_menu_policy(window, &binding.projection);
         }
         if self.pending.is_none() && !self.mailbox.intents.borrow().is_empty() {
             if self.mailbox.wake.wake().is_err() {
@@ -349,6 +386,19 @@ impl AppWebNavigation {
             }
         }
         committed
+    }
+
+    fn apply_context_menu_policy(
+        &self,
+        window: &winit::window::Window,
+        projection: &NavigationControlProjection,
+    ) {
+        window.set_context_menu_enabled(
+            self.context_menu_enabled
+                .get(&projection.current.node_id())
+                .copied()
+                .unwrap_or(self.default_context_menu_enabled),
+        );
     }
 
     fn settle(

@@ -86,6 +86,11 @@ pub trait WindowExtWebSys {
     /// Some events are impossible to prevent. E.g. Firefox allows to access the native browser
     /// context menu with Shift+Rightclick.
     fn set_prevent_default(&self, prevent_default: bool);
+
+    /// Permit the browser's context menu independently of other default-event
+    /// cancellation. The change is synchronous when called on the main thread.
+    /// Browser-reserved context menus may be impossible to prevent.
+    fn set_context_menu_enabled(&self, enabled: bool);
 }
 
 impl WindowExtWebSys for Window {
@@ -100,6 +105,10 @@ impl WindowExtWebSys for Window {
 
     fn set_prevent_default(&self, prevent_default: bool) {
         self.window.set_prevent_default(prevent_default)
+    }
+
+    fn set_context_menu_enabled(&self, enabled: bool) {
+        self.window.set_context_menu_enabled(enabled)
     }
 }
 

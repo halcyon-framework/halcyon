@@ -87,6 +87,10 @@ impl Window {
         self.inner.dispatch(move |inner| inner.canvas.borrow().prevent_default.set(prevent_default))
     }
 
+    pub(crate) fn set_context_menu_enabled(&self, enabled: bool) {
+        self.inner.dispatch(move |inner| inner.canvas.borrow().set_context_menu_enabled(enabled))
+    }
+
     #[cfg(feature = "rwh_06")]
     #[inline]
     pub fn raw_window_handle_rwh_06(&self) -> Result<rwh_06::RawWindowHandle, rwh_06::HandleError> {

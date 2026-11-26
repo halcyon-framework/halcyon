@@ -67,9 +67,9 @@ Place `halcyon-starter` beside the complete `halcyon` source checkout.
 Create the four files below in `halcyon-starter`. This application has its
 own Cargo workspace and lockfile. Cargo selects the windowing dependency from
 Halcyon's manifest. Native targets use registry `winit` 0.30.12. On
-WebAssembly, the published beta and this source candidate use `halcyon-winit`
-0.30.13. Upstream Winit has a separate type identity on WebAssembly. To use the
-published beta in the starter, replace its path
+WebAssembly, the published beta uses `halcyon-winit` 0.30.13; the source candidate
+uses the local, unpublished 0.30.14 helper. Upstream Winit has a separate type identity on
+WebAssembly. To use the published beta in the starter, replace its path
 dependency with the registry dependency from the command above.
 
 ### `Cargo.toml`

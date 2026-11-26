@@ -91,7 +91,10 @@ mod web_navigation;
 #[cfg(test)]
 mod web_navigation_tests;
 #[cfg(target_arch = "wasm32")]
-pub use web_navigation::{WebNavigation, WebNavigationIntentSink, WebNavigationRequestError, WebRouteError};
+pub use web_navigation::{
+    WebContextMenuPolicyError, WebNavigation, WebNavigationIntentSink, WebNavigationRequestError,
+    WebRouteError,
+};
 pub use cursor_output::UiThreadCursorOutput;
 use ui_scale::UiScaleState;
 pub use ui_scale::{

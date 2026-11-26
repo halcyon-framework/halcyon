@@ -33,7 +33,8 @@ See [Getting started](getting-started.md).
 Use `halcyon::winit` for types passed into or returned by Halcyon. On native
 targets it re-exports registry `winit` 0.30.12, including the same types a
 direct dependency on `winit = "=0.30.12"` supplies. On WebAssembly, the
-published beta and this source candidate re-export `halcyon-winit` 0.30.13.
+published beta re-exports `halcyon-winit` 0.30.13; the source candidate uses the
+local, unpublished 0.30.14 helper.
 Upstream `winit` has a separate type identity on WebAssembly.
 
 ## Architecture and design
