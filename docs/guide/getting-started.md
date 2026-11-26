@@ -15,13 +15,13 @@ governing-specs:
 
 # Getting started
 
-Install the published 0.271.3-beta from your application's Cargo root.
+Install the published 0.271.4-beta from your application's Cargo root.
 
 ```sh
-cargo add halcyon-rs@0.271.3-beta
+cargo add halcyon-rs@0.271.4-beta
 ```
 
-This source checkout prepares 0.271.4-beta for publication. Use `halcyon`
+This source checkout is the local `0.272.0-beta` release candidate. Use `halcyon`
 in Rust imports and `halcyon::winit` for windowing types shared with Halcyon
 on either target.
 
@@ -66,9 +66,10 @@ The three examples compiled and linked under Halcyon `0.270.2-beta` on Apple Sil
 Place `halcyon-starter` beside the complete `halcyon` source checkout.
 Create the four files below in `halcyon-starter`. This application has its
 own Cargo workspace and lockfile. Cargo selects the windowing dependency from
-Halcyon's manifest. Native targets use registry `winit` 0.30.12. WebAssembly
-uses the `halcyon-winit` helper, whose types are distinct from those of
-upstream Winit. To use the published beta in the starter, replace its path
+Halcyon's manifest. Native targets use registry `winit` 0.30.12. On
+WebAssembly, the published beta and this source candidate use `halcyon-winit`
+0.30.13. Upstream Winit has a separate type identity on WebAssembly. To use the
+published beta in the starter, replace its path
 dependency with the registry dependency from the command above.
 
 ### `Cargo.toml`

@@ -3,7 +3,9 @@
 // SPEC-HAL-018: Uses App + Screen pattern
 
 use halcyon::core::app::{App, AppConfig, Screen, ScreenContext, ScreenFrameContext};
+use halcyon::core::appearance::SwitchAppearance;
 use halcyon::core::event::FusedInputEvent;
+use halcyon::core::paint::Color;
 use halcyon::core::widget::Widget;
 use halcyon::model::form_binder::FormBinder;
 use halcyon::prelude::*;
@@ -119,6 +121,18 @@ impl Screen for SwitchDemoScreen {
         let mut switch4 = Switch::on(true).with_label("Locked option (disabled)");
         switch4.set_disabled(true);
         cx.tree.add_child(content_col, Box::new(switch4), None, 3);
+
+        let appearance = SwitchAppearance::try_new(
+            Color::from_hex(0x42484d),
+            Color::from_hex(0x597c65),
+            Color::from_hex(0xc4c8ca),
+            Color::from_hex(0xe1e7df),
+        )
+        .expect("valid Switch example colors");
+        let rounded = Switch::new()
+            .with_label("Rounded appearance")
+            .with_switch_appearance(appearance);
+        cx.tree.add_child(content_col, Box::new(rounded), None, 4);
 
         // Spacer
         cx.tree

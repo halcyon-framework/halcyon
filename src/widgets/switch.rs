@@ -3,10 +3,11 @@
 // Semantic sibling of Checkbox. Binary state, continuous visual affordance (track + thumb).
 
 use crate::core::animation::{Animation, AnimationSample, Easing, TransitionHandle};
+use crate::core::appearance::SwitchAppearance;
 use crate::core::event::{Event, EventPhase, KeyCode, PointerButton, PointerEventKind};
 use crate::core::layout::{Constraints, LayoutResult};
 use crate::core::math::{RectF, Size, snap_to_physical};
-use crate::core::paint::LAYER_CONTENT;
+use crate::core::paint::{LAYER_CONTENT, RoundedCorners};
 use crate::core::text_engine::compute_control_text_baseline_y;
 use crate::core::widget::{
     EventContext, LayoutContext, PaintContext, UpdateContext, Widget, WidgetDowncast,
@@ -105,6 +106,7 @@ pub enum LabelSide {
 pub struct Switch {
     id: WidgetInternalId,
     state: SwitchState,
+    appearance: Option<SwitchAppearance>,
     /// SPEC-HAL-208 INV-A3: Owned label text. None = track-only.
     label: Option<String>,
     /// SPEC-HAL-208A INV-H1: which side of the track the label occupies.
@@ -133,6 +135,7 @@ impl Switch {
         Self {
             id: WidgetInternalId::new(),
             state: SwitchState::default(),
+            appearance: None,
             label: None,
             label_side: LabelSide::default(),
             on_toggle_changed: None,
@@ -158,6 +161,7 @@ impl Switch {
                 on,
                 ..Default::default()
             },
+            appearance: None,
             label: None,
             label_side: LabelSide::default(),
             on_toggle_changed: None,
@@ -173,6 +177,12 @@ impl Switch {
             toggle_anim: None,
             toggle_retiring: None,
         }
+    }
+
+    /// Select a rounded track and thumb with checked colors for this Switch.
+    pub fn with_switch_appearance(mut self, appearance: SwitchAppearance) -> Self {
+        self.appearance = Some(appearance);
+        self
     }
 
     /// SPEC-HAL-208: Set label (builder pattern).
@@ -200,6 +210,9 @@ impl Switch {
     /// Set disabled state.
     pub fn set_disabled(&mut self, disabled: bool) {
         self.state.disabled = disabled;
+        if disabled {
+            self.state.active = false;
+        }
     }
 
     /// Get current on/off state.
@@ -310,6 +323,77 @@ impl Switch {
         // The semantic endpoint also selects the thumb color at the start sample.
         cx.invalidate_paint();
     }
+
+    fn paint_rounded_indicator(
+        &self,
+        cx: &mut PaintContext,
+        track: RectF,
+        appearance: SwitchAppearance,
+    ) {
+        let extent = track.width.min(track.height);
+        if extent <= 0.0
+            || ![track.x, track.y, track.width, track.height, track.right(), track.bottom()]
+                .into_iter()
+                .all(f32::is_finite)
+        {
+            return;
+        }
+
+        let (track_color, thumb_color) = if self.state.on {
+            (appearance.on_track(), appearance.on_thumb())
+        } else {
+            (appearance.off_track(), appearance.off_thumb())
+        };
+        let (track_color, thumb_color) = if self.state.disabled {
+            (
+                track_color
+                    .lerp(cx.theme.colors.surfaces.content, 0.5)
+                    .with_alpha(track_color.a),
+                thumb_color
+                    .lerp(cx.theme.colors.typography.muted, 0.5)
+                    .with_alpha(thumb_color.a),
+            )
+        } else {
+            let lift = 0.08 * self.hover_t.clamp(0.0, 1.0);
+            (track_color.lighten(lift), thumb_color.lighten(lift))
+        };
+        cx.scene.push_rounded_rect(
+            track,
+            track_color,
+            RoundedCorners::uniform(extent * 0.5),
+            LAYER_CONTENT,
+            cx.scene_key,
+        );
+
+        let geometry = &cx.theme.geometry.switch;
+        let scale = cx.scale_factor;
+        let inset = snap_to_physical(geometry.thumb_inset, scale);
+        let diameter = snap_to_physical(geometry.thumb_diameter, scale);
+        if !inset.is_finite() || !diameter.is_finite() {
+            return;
+        }
+        let inset = inset.clamp(0.0, extent * 0.5);
+        let diameter = diameter.min(extent - 2.0 * inset);
+        if diameter <= 0.0 {
+            return;
+        }
+
+        let left = track.x + inset;
+        let travel = (track.width - 2.0 * inset - diameter).max(0.0);
+        let x = snap_to_physical(left + travel * self.toggle_t.clamp(0.0, 1.0), scale)
+            .clamp(left, left + travel);
+        if !x.is_finite() {
+            return;
+        }
+        let thumb = RectF::new(x, track.y + (track.height - diameter) * 0.5, diameter, diameter);
+        cx.scene.push_rounded_rect(
+            thumb,
+            thumb_color,
+            RoundedCorners::uniform(diameter * 0.5),
+            LAYER_CONTENT + 2,
+            cx.scene_key,
+        );
+    }
 }
 
 impl Default for Switch {
@@ -380,22 +464,7 @@ impl Widget for Switch {
         // Track centered vertically in rect
         let track_y = rect.y + (rect.height - track_height) * 0.5;
 
-        let hover_t = if self.state.disabled {
-            0.0
-        } else {
-            self.hover_t
-        };
-
-        // Track colors. Hover lifts the recessed track without changing the
-        // binary state signal, which stays on the thumb.
-        let track_bg = theme
-            .colors
-            .surfaces
-            .content
-            .lerp(theme.colors.surfaces.level2, hover_t);
-
         let scale = cx.scale_factor;
-        let one_px = cx.one_px();
         let bx = snap_to_physical(track_x, scale);
         let by = snap_to_physical(track_y, scale);
         let br = snap_to_physical(track_x + track_width, scale);
@@ -404,77 +473,97 @@ impl Widget for Switch {
         let bh = (bb - by).max(0.0);
         let snapped_track = RectF::new(bx, by, bw, bh);
 
-        if bw > 0.0 && bh > 0.0 {
-            cx.scene
-                .push_rect(snapped_track, track_bg, LAYER_CONTENT, cx.scene_key);
-
-            let shadow = theme.colors.borders.shadow;
-            let highlight = theme.colors.borders.highlight;
-            cx.scene.push_rect(
-                RectF::new(bx, by, bw, one_px),
-                shadow,
-                LAYER_CONTENT + 1,
-                None,
-            );
-            cx.scene.push_rect(
-                RectF::new(bx, by + one_px, one_px, bh - 2.0 * one_px),
-                shadow,
-                LAYER_CONTENT + 1,
-                None,
-            );
-            cx.scene.push_rect(
-                RectF::new(bx, bb - one_px, bw, one_px),
-                highlight,
-                LAYER_CONTENT + 1,
-                None,
-            );
-            cx.scene.push_rect(
-                RectF::new(br - one_px, by + one_px, one_px, bh - 2.0 * one_px),
-                highlight,
-                LAYER_CONTENT + 1,
-                None,
-            );
-        }
-
-        // The filled half-track slides without changing owner bounds.
-        let t = self.toggle_t;
-        let thumb_width = track_width / 2.0;
-        let thumb_height = track_height;
-        let thumb_travel = track_width - thumb_width;
-        let thumb_x_logical = track_x + thumb_travel * t;
-        let thumb_y_logical = track_y;
-        let thumb_x_snapped = snap_to_physical(thumb_x_logical, scale);
-        let thumb_y_snapped = snap_to_physical(thumb_y_logical, scale);
-        let thumb_w_snapped =
-            snap_to_physical(thumb_x_logical + thumb_width, scale) - thumb_x_snapped;
-        let thumb_h_snapped =
-            snap_to_physical(thumb_y_logical + thumb_height, scale) - thumb_y_snapped;
-        let thumb_rect = RectF::new(
-            thumb_x_snapped,
-            thumb_y_snapped,
-            thumb_w_snapped,
-            thumb_h_snapped,
-        );
-
-        let thumb_color = if self.state.disabled {
-            theme.colors.typography.muted
-        } else if self.state.on {
-            theme
-                .colors
-                .accents
-                .primary
-                .lerp(theme.colors.accents.hover, hover_t)
+        if let Some(appearance) = self.appearance {
+            self.paint_rounded_indicator(cx, snapped_track, appearance);
         } else {
-            theme
-                .colors
-                .borders
-                .strong
-                .lerp(theme.colors.controls.border_hover, hover_t)
-        };
+            let hover_t = if self.state.disabled {
+                0.0
+            } else {
+                self.hover_t
+            };
 
-        if thumb_w_snapped > 0.0 && thumb_h_snapped > 0.0 {
-            cx.scene
-                .push_rect(thumb_rect, thumb_color, LAYER_CONTENT + 2, cx.scene_key);
+            // Track colors. Hover lifts the recessed track without changing the
+            // binary state signal, which stays on the thumb.
+            let track_bg = theme
+                .colors
+                .surfaces
+                .content
+                .lerp(theme.colors.surfaces.level2, hover_t);
+
+            let one_px = cx.one_px();
+
+            if bw > 0.0 && bh > 0.0 {
+                cx.scene
+                    .push_rect(snapped_track, track_bg, LAYER_CONTENT, cx.scene_key);
+
+                let shadow = theme.colors.borders.shadow;
+                let highlight = theme.colors.borders.highlight;
+                cx.scene.push_rect(
+                    RectF::new(bx, by, bw, one_px),
+                    shadow,
+                    LAYER_CONTENT + 1,
+                    None,
+                );
+                cx.scene.push_rect(
+                    RectF::new(bx, by + one_px, one_px, bh - 2.0 * one_px),
+                    shadow,
+                    LAYER_CONTENT + 1,
+                    None,
+                );
+                cx.scene.push_rect(
+                    RectF::new(bx, bb - one_px, bw, one_px),
+                    highlight,
+                    LAYER_CONTENT + 1,
+                    None,
+                );
+                cx.scene.push_rect(
+                    RectF::new(br - one_px, by + one_px, one_px, bh - 2.0 * one_px),
+                    highlight,
+                    LAYER_CONTENT + 1,
+                    None,
+                );
+            }
+
+            // The filled half-track slides without changing owner bounds.
+            let t = self.toggle_t;
+            let thumb_width = track_width / 2.0;
+            let thumb_height = track_height;
+            let thumb_travel = track_width - thumb_width;
+            let thumb_x_logical = track_x + thumb_travel * t;
+            let thumb_y_logical = track_y;
+            let thumb_x_snapped = snap_to_physical(thumb_x_logical, scale);
+            let thumb_y_snapped = snap_to_physical(thumb_y_logical, scale);
+            let thumb_w_snapped =
+                snap_to_physical(thumb_x_logical + thumb_width, scale) - thumb_x_snapped;
+            let thumb_h_snapped =
+                snap_to_physical(thumb_y_logical + thumb_height, scale) - thumb_y_snapped;
+            let thumb_rect = RectF::new(
+                thumb_x_snapped,
+                thumb_y_snapped,
+                thumb_w_snapped,
+                thumb_h_snapped,
+            );
+
+            let thumb_color = if self.state.disabled {
+                theme.colors.typography.muted
+            } else if self.state.on {
+                theme
+                    .colors
+                    .accents
+                    .primary
+                    .lerp(theme.colors.accents.hover, hover_t)
+            } else {
+                theme
+                    .colors
+                    .borders
+                    .strong
+                    .lerp(theme.colors.controls.border_hover, hover_t)
+            };
+
+            if thumb_w_snapped > 0.0 && thumb_h_snapped > 0.0 {
+                cx.scene
+                    .push_rect(thumb_rect, thumb_color, LAYER_CONTENT + 2, cx.scene_key);
+            }
         }
 
         // SPEC-HAL-208/208A INV-C1/H4: paint label after track (paint order is
@@ -539,22 +628,39 @@ impl Widget for Switch {
                     PointerEventKind::Down
                     | PointerEventKind::DoubleClick
                     | PointerEventKind::TripleClick => {
-                        if pe.button != Some(PointerButton::Primary) {
+                        if pe.button != Some(PointerButton::Primary)
+                            || !inside
+                            || cx.has_pointer_capture()
+                        {
                             return false;
                         }
-                        if inside {
-                            self.on_semantic_event(SwitchEvent::FocusGain);
-                            // Toggle immediately on press — no PointerUp delay.
+
+                        self.on_semantic_event(SwitchEvent::FocusGain);
+                        self.state.active = true;
+                        cx.capture_pointer(PointerButton::Primary);
+                        true
+                    }
+                    PointerEventKind::Move | PointerEventKind::DragStart
+                        if cx.has_pointer_capture() && self.state.active && !inside =>
+                    {
+                        self.on_semantic_event(SwitchEvent::Cancel);
+                        true
+                    }
+                    PointerEventKind::Up => {
+                        if pe.button != Some(PointerButton::Primary) || !cx.has_pointer_capture() {
+                            return false;
+                        }
+                        // INV-B1: Only a surviving press can commit on release.
+                        if self.state.active && inside {
                             let result = self.on_semantic_event(SwitchEvent::Activate);
                             if let Some(new_on) = result {
                                 self.animate_toggle(cx, new_on);
                             }
-                            true
                         } else {
-                            false
+                            self.on_semantic_event(SwitchEvent::Cancel);
                         }
+                        true
                     }
-                    PointerEventKind::Up => false,
                     _ => false,
                 }
             }
@@ -576,6 +682,10 @@ impl Widget for Switch {
 
     fn focusable(&self) -> bool {
         !self.state.disabled
+    }
+
+    fn paints_own_focus_indicator(&self) -> bool {
+        self.appearance.is_none()
     }
 
     fn touch_target(&self, _hit: crate::core::event::TouchHit) -> Option<crate::core::event::TouchTarget> {
@@ -694,6 +804,15 @@ impl Widget for Switch {
         self.on_semantic_event(SwitchEvent::FocusLoss);
     }
 
+    fn on_pointer_capture_cancel(
+        &mut self,
+        _cx: &mut EventContext,
+        _pointer: crate::core::event::PointerId,
+        _reason: crate::core::event::CancellationReason,
+    ) {
+        self.on_semantic_event(SwitchEvent::Cancel);
+    }
+
     fn accepts_keyboard_activation(&self) -> bool {
         !self.state.disabled
     }
@@ -747,6 +866,346 @@ mod tests {
     use crate::platform::font_manager_text_engine::FontManagerTextEngine;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    #[test]
+    fn switch_appearance_checks_each_linear_rgba_value() {
+        use crate::core::appearance::SwitchAppearanceError;
+        use crate::core::paint::Color;
+
+        let colors = [
+            Color::from_hex(0x42484d).with_alpha(0.2),
+            Color::from_hex(0x597c65).with_alpha(0.4),
+            Color::from_hex(0xc4c8ca).with_alpha(0.6),
+            Color::from_hex(0xe1e7df).with_alpha(0.8),
+        ];
+        let [off_track, on_track, off_thumb, on_thumb] = colors;
+        let appearance = SwitchAppearance::try_new(off_track, on_track, off_thumb, on_thumb).unwrap();
+        assert_eq!(
+            [appearance.off_track(), appearance.on_track(), appearance.off_thumb(), appearance.on_thumb()],
+            colors,
+        );
+        for invalid in [
+            Color::from_linear(f32::NAN, 0.0, 0.0, 1.0),
+            Color::from_linear(0.0, f32::INFINITY, 0.0, 1.0),
+            Color::from_linear(0.0, 0.0, -0.1, 1.0),
+            Color::WHITE.with_alpha(1.1),
+        ] {
+            for index in 0..colors.len() {
+                let mut values = colors;
+                values[index] = invalid;
+                let [off_track, on_track, off_thumb, on_thumb] = values;
+                assert_eq!(
+                    SwitchAppearance::try_new(off_track, on_track, off_thumb, on_thumb),
+                    Err(SwitchAppearanceError::InvalidColor),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn switch_rounded_recipe_preserves_layout_and_uses_the_binary_palette() {
+        use crate::core::animation::Timeline;
+        use crate::core::paint::Color;
+        use crate::widgets::radio_button::tests::radio_paint;
+
+        let off_track = Color::from_hex(0x42484d).with_alpha(0.6);
+        let on_track = Color::from_hex(0x597c65).with_alpha(0.7);
+        let off_thumb = Color::from_hex(0xc4c8ca).with_alpha(0.8);
+        let on_thumb = Color::from_hex(0xe1e7df).with_alpha(0.9);
+        let appearance = SwitchAppearance::try_new(off_track, on_track, off_thumb, on_thumb).unwrap();
+        let mut theme = Theme::dark();
+        theme.geometry.switch.track_width = 41.3;
+        theme.geometry.switch.track_height = 18.2;
+        theme.geometry.switch.thumb_inset = 2.4;
+        theme.geometry.switch.thumb_diameter = 11.2;
+        let timeline = Timeline::new();
+        let paint = |control: &Switch, scale, rect| {
+            radio_paint(&timeline, &theme, |cx| {
+                cx.scale_factor = scale;
+                control.paint(cx, rect, &[]);
+            })
+        };
+        for side in [LabelSide::Leading, LabelSide::Trailing] {
+            let stock = Switch::default().with_label("Enabled").with_label_side(side);
+            let rounded = Switch::on(false)
+                .with_label("Enabled")
+                .with_label_side(side)
+                .with_switch_appearance(appearance);
+            assert!(stock.paints_own_focus_indicator());
+            assert!(!rounded.paints_own_focus_indicator());
+            let measure = |control: Switch| {
+                let mut tree = WidgetTree::new();
+                let root = tree.create_root(Box::new(control), None, 0);
+                RetainedSceneTestHarness::new().frame(
+                    &mut tree,
+                    root,
+                    Constraints::loose(Size::new(240.0, 100.0)),
+                    &theme,
+                    &mut FontManagerTextEngine::new(),
+                    &IconRegistry::new(&[]),
+                );
+                let rect = tree.get_absolute_paint_rect(root).unwrap();
+                let y = rect.y + rect.height * 0.5;
+                for x in [rect.x + 2.0, rect.right() - 2.0] {
+                    assert_eq!(tree.hit_test(x, y).unwrap().widget_id, tree.node(root).unwrap().id);
+                }
+                rect
+            };
+            let rect = measure(rounded);
+            assert_eq!(rect, measure(stock));
+
+            for scale in [1.0, 1.25, 2.0] {
+                let stock = paint(&Switch::new().with_label("Enabled").with_label_side(side), scale, rect);
+                let SceneNode::Rect(stock_track) = &stock[0] else { panic!("stock track") };
+                let Some(SceneNode::Text(stock_label)) = stock.last() else { panic!("stock label") };
+                let mut positions = Vec::new();
+                for (on, progress, hover, disabled) in [
+                    (false, 0.0, 0.0, false),
+                    (true, 0.5, 0.5, false),
+                    (true, 1.0, 1.0, true),
+                    (false, 0.0, 1.0, true),
+                ] {
+                    let mut control = Switch::on(on)
+                        .with_label("Enabled")
+                        .with_label_side(side)
+                        .with_switch_appearance(appearance);
+                    control.toggle_t = progress;
+                    control.hover_t = hover;
+                    control.set_disabled(disabled);
+                    let nodes = paint(&control, scale, rect);
+                    let [SceneNode::RoundedRect(track), SceneNode::RoundedRect(thumb), SceneNode::Text(label)] =
+                        nodes.as_slice() else { panic!("rounded track, thumb, label expected") };
+                    let [track_base, thumb_base] = if on { [on_track, on_thumb] } else { [off_track, off_thumb] };
+                    let [track_color, thumb_color] = if disabled {
+                        [
+                            track_base.lerp(theme.colors.surfaces.content, 0.5).with_alpha(track_base.a),
+                            thumb_base.lerp(theme.colors.typography.muted, 0.5).with_alpha(thumb_base.a),
+                        ]
+                    } else {
+                        [track_base.lighten(0.08 * hover), thumb_base.lighten(0.08 * hover)]
+                    };
+                    assert_eq!(track.color, track_color.into());
+                    assert_eq!(thumb.color, thumb_color.into());
+                    assert_eq!(track.rect, stock_track.rect);
+                    assert_eq!(label.position, stock_label.position);
+                    assert_eq!((track.z_index, thumb.z_index, label.z_index),
+                        (LAYER_CONTENT, LAYER_CONTENT + 2, LAYER_CONTENT + 3));
+                    let bounds = track.rect;
+                    let extent = bounds.width.min(bounds.height);
+                    let inset = snap_to_physical(2.4, scale).clamp(0.0, extent * 0.5);
+                    let diameter = snap_to_physical(11.2, scale).min(extent - 2.0 * inset);
+                    let left = bounds.x + inset;
+                    let travel = bounds.width - 2.0 * inset - diameter;
+                    assert_eq!(track.radius, extent * 0.5);
+                    assert_eq!(thumb.radius, diameter * 0.5);
+                    assert_eq!(
+                        thumb.rect,
+                        RectF::new(
+                            snap_to_physical(left + travel * progress, scale).clamp(left, left + travel),
+                            bounds.y + (bounds.height - diameter) * 0.5,
+                            diameter,
+                            diameter,
+                        ),
+                    );
+                    positions.push(thumb.rect.x);
+                }
+                assert!(positions[0] < positions[1] && positions[1] < positions[2]);
+                assert_eq!(positions[0], positions[3]);
+            }
+        }
+    }
+
+    #[test]
+    fn switch_rounded_focus_indicator_encloses_the_owned_label() {
+        use crate::core::event::{InteractionDomains, WindowId};
+        use crate::core::event_router::EventRouter;
+        use crate::core::paint::{Color, LAYER_FOCUS};
+
+        fn collect_focus(nodes: &[SceneNode], rects: &mut Vec<RectF>) {
+            for node in nodes {
+                match node {
+                    SceneNode::BorderRect(border) if border.z_index == LAYER_FOCUS => {
+                        rects.push(border.rect);
+                    }
+                    SceneNode::RetainedFragment(fragment) => collect_focus(&fragment.children, rects),
+                    _ => {}
+                }
+            }
+        }
+
+        let appearance = SwitchAppearance::try_new(Color::BLACK, Color::BLACK, Color::WHITE, Color::WHITE)
+            .unwrap();
+        let theme = Theme::dark();
+        for rounded in [false, true] {
+            let control = Switch::new().with_label("Enabled");
+            let control = if rounded { control.with_switch_appearance(appearance) } else { control };
+            let mut tree = WidgetTree::new();
+            let root = tree.create_root(Box::new(control), None, 0);
+            let owner = tree.node(root).unwrap().id;
+            let mut domains = InteractionDomains::new();
+            EventRouter::new().request_focus_for_widget(&mut tree, owner, domains.primary_state_mut());
+            let frame = RetainedSceneTestHarness::new().frame_with_appearance(
+                &mut tree,
+                root,
+                Constraints::loose(Size::new(240.0, 100.0)),
+                &theme,
+                &mut FontManagerTextEngine::new(),
+                &IconRegistry::new(&[]),
+                &domains,
+                WindowId::PRIMARY,
+            );
+            let rect = tree.get_absolute_paint_rect(root).unwrap();
+            assert!(rect.width > theme.geometry.switch.track_width);
+            let mut focus = Vec::new();
+            collect_focus(&frame.scene_root, &mut focus);
+            if rounded {
+                assert_eq!(focus, vec![rect]);
+            } else {
+                assert!(focus.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn switch_mouse_commit_requires_a_captured_inside_release() {
+        use crate::core::app::{AppContext, ModalStack, ScreenContext, ScreenStack};
+        use crate::core::event::{
+            FusedInputEvent, InteractionDomains, PointerButtonsState, PointerDevice, PointerId,
+            WindowId,
+        };
+        use crate::core::event_router::EventRouter;
+        use crate::core::math::Point;
+        use crate::model::form_binder::FormBinder;
+        use crate::runtime::binding_registry::BindingRegistry;
+        use std::cell::RefCell;
+        use web_time::Instant;
+
+        let mut binder = FormBinder::new();
+        let notifications = Rc::new(RefCell::new(Vec::new()));
+        let observed = notifications.clone();
+        let mut control = Switch::new()
+            .with_label("Enabled")
+            .on_toggle_changed(move |on| observed.borrow_mut().push(on));
+        control.set_binding("enabled", binder.writer());
+        let mut tree = WidgetTree::new();
+        let root = tree.create_root(Box::new(control), None, 0);
+        let theme = Theme::dark();
+        let mut domains = InteractionDomains::new();
+        let mut text = FontManagerTextEngine::new();
+        let mut harness = RetainedSceneTestHarness::new();
+        harness.frame_with_appearance(
+            &mut tree,
+            root,
+            Constraints::loose(Size::new(360.0, 100.0)),
+            &theme,
+            &mut text,
+            &IconRegistry::new(&[]),
+            &domains,
+            WindowId::PRIMARY,
+        );
+        let rect = tree.get_absolute_paint_rect(root).unwrap();
+        let y = rect.y + rect.height * 0.5;
+        let track = Point::new(rect.x + 2.0, y);
+        let label = Point::new(rect.right() - 2.0, y);
+        let outside = Point::new(rect.right() + 4.0, y);
+        let time = Instant::now();
+        let down = |pos| FusedInputEvent::PointerDown {
+            window_id: WindowId::PRIMARY,
+            time,
+            pos,
+            device: PointerDevice::Mouse,
+            button: PointerButton::Primary,
+            click_count: 1,
+        };
+        let up = |pos| FusedInputEvent::PointerUp {
+            window_id: WindowId::PRIMARY,
+            time,
+            pos,
+            device: PointerDevice::Mouse,
+            button: PointerButton::Primary,
+        };
+        let move_to = |pos, primary| FusedInputEvent::PointerMove {
+            window_id: WindowId::PRIMARY,
+            time,
+            pos,
+            delta: (1.0, 0.0),
+            device: PointerDevice::Mouse,
+            buttons: PointerButtonsState {
+                primary,
+                ..Default::default()
+            },
+        };
+        let focus = |focused| FusedInputEvent::FocusChanged {
+            window_id: WindowId::PRIMARY,
+            time,
+            focused,
+        };
+
+        let mut router = EventRouter::new();
+        let mut bindings = BindingRegistry::new();
+        let mut app = AppContext::new(theme);
+        let mut screens = ScreenStack::new();
+        let mut modals = ModalStack::new();
+        let screen = ScreenContext::new(&mut app, &mut screens, &mut modals, None);
+        let mut previous_count = 0;
+        for (stage, input, disabled, on, count, captured) in [
+            ("hover", move_to(track, false), false, false, 0, false),
+            ("track down", down(track), false, false, 0, true),
+            ("held inside", move_to(label, true), false, false, 0, true),
+            ("track up", up(track), false, true, 1, false),
+            ("unpaired up", up(track), false, true, 1, false),
+            ("label down", down(label), false, true, 1, true),
+            ("label up", up(label), false, false, 2, false),
+            ("outside down", down(outside), false, false, 2, false),
+            ("outside start", up(track), false, false, 2, false),
+            ("exit down", down(track), false, false, 2, true),
+            ("exit move", move_to(outside, true), false, false, 2, true),
+            ("reentry", move_to(track, true), false, false, 2, true),
+            ("cancelled up", up(track), false, false, 2, false),
+            ("outside release down", down(track), false, false, 2, true),
+            ("outside release", up(outside), false, false, 2, false),
+            ("before focus loss", down(track), false, false, 2, true),
+            ("focus loss", focus(false), false, false, 2, false),
+            ("focus gain", focus(true), false, false, 2, false),
+            ("up after focus loss", up(track), false, false, 2, false),
+            ("disabled down", down(track), true, false, 2, false),
+            ("disabled up", up(track), true, false, 2, false),
+            ("before disable", down(track), false, false, 2, true),
+            ("disabled during press", up(track), true, false, 2, false),
+            ("fresh down", down(track), false, false, 2, true),
+            ("fresh up", up(track), false, true, 3, false),
+        ] {
+            tree.node_mut(root)
+                .unwrap()
+                .widget_mut()
+                .as_any_mut()
+                .downcast_mut::<Switch>()
+                .unwrap()
+                .set_disabled(disabled);
+            router.route_input_event(
+                &mut tree,
+                input,
+                Some(root),
+                &mut text,
+                None,
+                domains.primary_state_mut(),
+                &mut bindings,
+            );
+            let control = tree.node(root).unwrap().widget().as_any().downcast_ref::<Switch>().unwrap();
+            assert_eq!(control.is_on(), on, "{stage}: Switch state");
+            assert_eq!(notifications.borrow().len(), count, "{stage}: callback count");
+            assert_eq!(
+                domains.primary_state().pointer_capture_manager.is_captured(PointerId::MOUSE),
+                captured,
+                "{stage}: pointer capture",
+            );
+            let mut written = None;
+            binder.bind(&screen, |binding| written = binding.bool("enabled").take());
+            assert_eq!(written, (count != previous_count).then_some(on), "{stage}: binding");
+            previous_count = count;
+        }
+        assert_eq!(notifications.borrow().as_slice(), &[true, false, true]);
+    }
 
     #[test]
     fn switch_presentation_update_and_retained_settlement() {

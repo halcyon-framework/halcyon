@@ -23,19 +23,18 @@ rest of the framework.
 
 ### Can I install Halcyon from crates.io?
 
-Use `cargo add halcyon-rs@0.271.3-beta` to install the published beta, then
-import `halcyon` in Rust. This source checkout prepares 0.271.4-beta for
-publication.
+Use `cargo add halcyon-rs@0.271.4-beta` to install the published beta, then
+import `halcyon` in Rust. This source checkout is the local `0.272.0-beta`
+release candidate.
 See [Getting started](getting-started.md).
 
 ### Which Winit types should a standalone application use?
 
 Use `halcyon::winit` for types passed into or returned by Halcyon. On native
 targets it re-exports registry `winit` 0.30.12, including the same types a
-direct dependency on `winit = "=0.30.12"` supplies. On WebAssembly it
-re-exports `halcyon-winit`. The published Halcyon 0.271.3-beta uses helper
-0.30.12 and this source checkout uses the local 0.30.13 derivative. Upstream
-`winit` has a separate type identity on WebAssembly.
+direct dependency on `winit = "=0.30.12"` supplies. On WebAssembly, the
+published beta and this source candidate re-export `halcyon-winit` 0.30.13.
+Upstream `winit` has a separate type identity on WebAssembly.
 
 ## Architecture and design
 

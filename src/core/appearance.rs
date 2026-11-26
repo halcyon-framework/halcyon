@@ -1,6 +1,6 @@
 //! Pure appearance values for SPEC-HAL-012 and the paired SPEC-HAL-328 amendment.
 //!
-//! Button resolution and checked per-instance input surfaces are pure values.
+//! Button resolution and checked per-instance control appearances are pure values.
 //! Semantic resolution and batch
 //! preparation do not publish a configuration or admit renderer/resource use.
 //! No value here creates a widget, member, input target, geometry or lifecycle.
@@ -20,6 +20,66 @@ pub enum ButtonMaterialPolicy {
     #[default]
     Standard,
     SdfV3,
+}
+
+/// Checked colors for an instance's rounded Switch track and thumb (HAL-012).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SwitchAppearance {
+    off_track: Color,
+    on_track: Color,
+    off_thumb: Color,
+    on_thumb: Color,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchAppearanceError {
+    InvalidColor,
+}
+
+impl std::fmt::Display for SwitchAppearanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Switch colors must be finite linear RGBA in 0..=1")
+    }
+}
+
+impl std::error::Error for SwitchAppearanceError {}
+
+impl SwitchAppearance {
+    pub fn try_new(
+        off_track: Color,
+        on_track: Color,
+        off_thumb: Color,
+        on_thumb: Color,
+    ) -> Result<Self, SwitchAppearanceError> {
+        if ![off_track, on_track, off_thumb, on_thumb]
+            .into_iter()
+            .all(valid_color)
+        {
+            return Err(SwitchAppearanceError::InvalidColor);
+        }
+        Ok(Self {
+            off_track,
+            on_track,
+            off_thumb,
+            on_thumb,
+        })
+    }
+
+    pub const fn off_track(&self) -> Color {
+        self.off_track
+    }
+
+    pub const fn on_track(&self) -> Color {
+        self.on_track
+    }
+
+    pub const fn off_thumb(&self) -> Color {
+        self.off_thumb
+    }
+
+    pub const fn on_thumb(&self) -> Color {
+        self.on_thumb
+    }
 }
 
 /// Immutable product-selected input colors and corner geometry (HAL012).

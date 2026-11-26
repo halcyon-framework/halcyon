@@ -3051,6 +3051,148 @@ fn render_scene_at_scale(
     read_compiled_surface(renderer, &compiled, surface_id).expect("complete SPEC-HAL-359 surface")
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn switch_mouse_release_moves_stock_and_rounded_thumbs_on_metal() {
+    use crate::core::appearance::SwitchAppearance;
+    use crate::core::event::{
+        FusedInputEvent, InteractionDomains, PointerButton, PointerButtonsState, PointerDevice,
+    };
+    use crate::core::event_router::EventRouter;
+    use crate::core::math::Point;
+    use crate::core::paint::Color;
+    use crate::core::text_engine::TextEngine;
+    use crate::runtime::binding_registry::BindingRegistry;
+    use crate::widgets::switch::Switch;
+    use web_time::Instant;
+
+    let rounded = SwitchAppearance::try_new(
+        Color::from_hex(0x42484d),
+        Color::from_hex(0x597c65),
+        Color::from_hex(0xc4c8ca),
+        Color::from_hex(0xe1e7df),
+    ).unwrap();
+    for (scale, appearance) in [(1.0, None), (1.0, Some(rounded)), (1.25, Some(rounded))] {
+        let width = 120;
+        let height = 70;
+        let (mut renderer, compositor, surface) =
+            setup_with_size_and_scale(width, height, scale).expect("Switch proof requires Metal");
+        assert_eq!(
+            renderer.gpu_resources().adapter.get_info().backend,
+            wgpu::Backend::Metal,
+        );
+        renderer.text_engine_mut().set_scale(scale);
+        let theme = Theme::dark();
+        let mut tree = WidgetTree::new();
+        let control = match appearance {
+            Some(appearance) => Switch::new().with_switch_appearance(appearance),
+            None => Switch::new(),
+        };
+        let root = tree.create_root(Box::new(control), None, 0);
+        let mut domains = InteractionDomains::new();
+        let mut harness = RetainedSceneTestHarness::new();
+        let mut router = EventRouter::new();
+        let mut bindings = BindingRegistry::new();
+
+        let frame = |renderer: &mut WgpuRenderer,
+                     tree: &mut WidgetTree,
+                     domains: &InteractionDomains,
+                     harness: &mut RetainedSceneTestHarness,
+                     time| {
+            harness.advance_transition_time(time);
+            let target = renderer.custom_render_target_snapshot(surface).unwrap();
+            let frame = harness.frame_with_optional_custom_render_target(
+                tree,
+                root,
+                Constraints::loose(Size::new(width as f32, height as f32)),
+                &theme,
+                renderer.text_engine_mut(),
+                &builtin_registry(),
+                Some(target),
+                Some((domains, WindowId::PRIMARY)),
+            );
+            let mut scene = SceneBuilder::new();
+            scene.push_retained_fragment(frame.scene_root.into());
+            render_scene_at_scale(renderer, &compositor, surface, scene.build(), scale)
+        };
+        frame(&mut renderer, &mut tree, &domains, &mut harness, 0.0);
+        let bounds = tree.get_absolute_paint_rect(root).unwrap();
+        let track = &theme.geometry.switch;
+        let y = bounds.y + bounds.height * 0.5;
+        let left = Point::new(bounds.x + track.track_width * 0.25, y);
+        let right = Point::new(bounds.x + track.track_width * 0.75, y);
+        let physical_width = (width as f32 * scale) as usize;
+        let pixels = |rgba: &[u8]| {
+            [left, right].map(|p| {
+                let x = (p.x * scale) as usize;
+                let y = (p.y * scale) as usize;
+                let index = (y * physical_width + x) * 4;
+                <[u8; 4]>::try_from(&rgba[index..index + 4]).unwrap()
+            })
+        };
+        let time = Instant::now();
+        let inputs = [
+            (
+                FusedInputEvent::PointerMove {
+                    window_id: WindowId::PRIMARY,
+                    time,
+                    pos: left,
+                    delta: (1.0, 0.0),
+                    device: PointerDevice::Mouse,
+                    buttons: PointerButtonsState::default(),
+                },
+                0.001,
+                false,
+            ),
+            (
+                FusedInputEvent::PointerDown {
+                    window_id: WindowId::PRIMARY,
+                    time,
+                    pos: left,
+                    device: PointerDevice::Mouse,
+                    button: PointerButton::Primary,
+                    click_count: 1,
+                },
+                0.010,
+                false,
+            ),
+            (
+                FusedInputEvent::PointerUp {
+                    window_id: WindowId::PRIMARY,
+                    time,
+                    pos: left,
+                    device: PointerDevice::Mouse,
+                    button: PointerButton::Primary,
+                },
+                0.170,
+                true,
+            ),
+        ];
+        let [off, held, on] = inputs.map(|(event, sample_time, animate)| {
+            router.route_input_event(
+                &mut tree,
+                event,
+                Some(root),
+                renderer.text_engine_mut(),
+                animate.then(|| harness.animation_context()),
+                domains.primary_state_mut(),
+                &mut bindings,
+            );
+            pixels(&frame(&mut renderer, &mut tree, &domains, &mut harness, sample_time))
+        });
+        assert_ne!(off[0], off[1], "the thumb and track must have distinct pixels");
+        assert_eq!(held, off, "a held press preserves the OFF thumb");
+        if appearance.is_some() {
+            assert_ne!(on[0], off[1], "the rounded track selects its ON color");
+            assert_ne!(on[0], off[0], "the rounded thumb leaves the left sample");
+        } else {
+            assert_eq!(on[0], off[1], "the left sample returns to the stock track color");
+        }
+        assert_ne!(on[1], off[1], "the right sample contains the moved thumb");
+        assert_ne!(on[1], off[0], "the ON thumb uses the configured recipe color");
+    }
+}
+
 #[cfg(target_os="macos")]
 #[test]
 fn frosted_glass_real_metal_current_prefix_gaussian_and_replacement_1x_2x() {

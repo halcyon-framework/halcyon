@@ -16,18 +16,19 @@ From the provided Halcyon source root, run Showcase:
 cargo run --locked -p halcyon-rs --example showcase
 ```
 
-Install the published 0.271.3-beta from your application's Cargo root.
+Install the published 0.271.4-beta from your application's Cargo root.
 
 ```sh
-cargo add halcyon-rs@0.271.3-beta
+cargo add halcyon-rs@0.271.4-beta
 ```
 
-The Rust library is named `halcyon`. This source checkout prepares
-0.271.4-beta for publication.
+The Rust library is named `halcyon`. This source checkout is the local
+`0.272.0-beta` release candidate.
 
 Import Halcyon's windowing types through `halcyon::winit`. Native callers
 can also use upstream `winit` pinned to `=0.30.12`. On WebAssembly, the
-`halcyon-winit` helper and upstream Winit have incompatible type identities.
+published beta and this source candidate use `halcyon-winit` 0.30.13.
+Upstream Winit has a separate type identity on WebAssembly.
 
 - [Getting started](docs/guide/getting-started.md)
 - [Documentation index](docs/guide/index.md)
