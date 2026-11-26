@@ -1,5 +1,4 @@
 use std::any::Any;
-use std::borrow::Cow;
 use std::fmt;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -3773,7 +3772,9 @@ impl AppearanceGpuLease {
             } else {
                 let module = Arc::new(device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("Halcyon 3D Controlled Fragment Module"),
-                    source: wgpu::ShaderSource::Naga(Cow::Owned(self.appearance.module.clone())),
+                    source: super::appearance::materialize_shader_source(
+                        self.appearance.module.clone(),
+                    )?,
                 }));
                 *cached = Some(module.clone());
                 #[cfg(test)]
@@ -3822,11 +3823,12 @@ impl AppearanceGpuLease {
         )
         .validate(&ir)
         .map_err(|e| error(e.to_string()))?;
+        let source = super::appearance::materialize_shader_source(ir)?;
         let allocation_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = Arc::new(device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Halcyon controlled appearance R027 MRT4 output"),
-            source: wgpu::ShaderSource::Naga(Cow::Owned(ir)),
+            source,
         }));
         let validation = pollster::block_on(validation_scope.pop());
         let allocation = pollster::block_on(allocation_scope.pop());
@@ -3858,9 +3860,9 @@ impl AppearanceGpuLease {
             } else {
                 let module = Arc::new(device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("Halcyon 3D Canonical Vertex Module"),
-                    source: wgpu::ShaderSource::Naga(Cow::Owned(
+                    source: super::appearance::materialize_shader_source(
                         self.canonical_vertex.module.clone(),
-                    )),
+                    )?,
                 }));
                 *cached = Some(module.clone());
                 #[cfg(test)]
@@ -3922,6 +3924,15 @@ impl AppearanceGpuLease {
     pub(crate) fn validate_roundtrip(&self) -> Result<(), Appearance3DAdmissionError> {
         super::appearance::validate_wgsl_roundtrip(&self.appearance.module)?;
         super::appearance::validate_wgsl_roundtrip(&self.canonical_vertex.module)
+    }
+
+    pub(crate) fn emitted_shader_sources_for_test(
+        &self,
+    ) -> Result<(String, String), Appearance3DAdmissionError> {
+        Ok((
+            super::appearance::emitted_wgsl(&self.canonical_vertex.module)?,
+            super::appearance::emitted_wgsl(&self.appearance.module)?,
+        ))
     }
 
     pub(crate) fn fragment_wrapper_proof(

@@ -2749,6 +2749,11 @@ fn actual_gpu_sample1_and_sample4_resolve_premultiplied_edges_and_mask_discard()
     assert_eq!(sample4.sample_count(), 4);
     let sample1_pixels = sample1.readback_rgba8(&gpu).unwrap();
     let sample4_pixels = sample4.readback_rgba8(&gpu).unwrap();
+    let adapter = gpu.adapter.get_info();
+    println!(
+        "baseline 3D readback on {:?} {}: sample1={} sample4={} pixels",
+        adapter.backend, adapter.name, sample1_pixels.len(), sample4_pixels.len(),
+    );
     let sample1_center = linear_rgba(sample1.format(), center(&sample1_pixels));
     let sample4_center = linear_rgba(sample4.format(), center(&sample4_pixels));
     for channel in 0..3 {

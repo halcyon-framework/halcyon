@@ -478,6 +478,61 @@ fn valid_adapter_preserves_spans_roundtrips_and_constructs_direct_naga_sources()
 }
 
 #[test]
+fn emitted_wgsl_preserves_the_controlled_entry_and_binding_abi() {
+    let context = cpu_context(PolicyLimits3D::conservative());
+    let appearance = context
+        .register_appearance(descriptor(
+            TEXTURED_SOURCE,
+            TEXTURED_SEMANTICS,
+            AppearanceMode::Opaque,
+        ))
+        .unwrap();
+    let admitted = context
+        .admit_appearance_for_test(appearance.handle(), TEXTURED_SEMANTICS)
+        .unwrap();
+    let (vertex, fragment) = admitted.emitted_shader_sources_for_test().unwrap();
+    let vertex_abi = [(0, 0, VIEW_BLOCK_SIZE), (1, 0, OBJECT_BLOCK_SIZE)];
+    let fragment_abi = [(0, 0, VIEW_BLOCK_SIZE), (2, 0, APPEARANCE_BLOCK_SIZE)];
+    for (emitted, stage, argument_count, uniform_abi, resource_count) in [
+        (vertex, naga::ShaderStage::Vertex, 4, vertex_abi.as_slice(), 2),
+        (
+            fragment,
+            naga::ShaderStage::Fragment,
+            5,
+            fragment_abi.as_slice(),
+            4,
+        ),
+    ] {
+        let reparsed = naga::front::wgsl::parse_str(&emitted).unwrap();
+        let entry = &reparsed.entry_points[0];
+        assert_eq!(reparsed.entry_points.len(), 1);
+        assert_eq!(entry.stage, stage);
+        assert!(!entry.name.starts_with("__"));
+        assert_eq!(entry.function.arguments.len(), argument_count);
+        assert_eq!(reparsed.global_variables.len(), resource_count);
+        let mut layout = naga::proc::Layouter::default();
+        layout.update(reparsed.to_ctx()).unwrap();
+        for &(group, binding, size) in uniform_abi {
+            let uniform = reparsed
+                .global_variables
+                .iter()
+                .map(|(_, global)| global)
+                .find(|global| global.binding == Some(naga::ResourceBinding { group, binding }))
+                .unwrap();
+            assert_eq!(uniform.space, naga::AddressSpace::Uniform);
+            assert_eq!(u64::from(layout[uniform.ty].size), size);
+        }
+        if entry.stage == naga::ShaderStage::Fragment {
+            assert!(matches!(
+                entry.function.result.as_ref().unwrap().binding,
+                Some(naga::Binding::Location { location: 0, .. })
+            ));
+            assert!(emitted.contains("bitcast<f32>(2139095039u)"));
+        }
+    }
+}
+
+#[test]
 fn malformed_source_reports_application_location() {
     let malformed = "fn halcyon_appearance(\n    position_render_relative: vec3<f32>\n";
     let error = admission_error(malformed, GeometrySemantics::NONE, AppearanceMode::Opaque);

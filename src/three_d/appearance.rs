@@ -436,8 +436,21 @@ pub(crate) fn compile_canonical_vertex(
     })
 }
 
-#[cfg(test)]
-pub(crate) fn validate_wgsl_roundtrip(module: &Module) -> Result<(), Appearance3DAdmissionError> {
+pub(crate) fn materialize_shader_source(
+    module: Module,
+) -> Result<wgpu::ShaderSource<'static>, Appearance3DAdmissionError> {
+    #[cfg(target_arch = "wasm32")]
+    return Ok(wgpu::ShaderSource::Wgsl(emitted_wgsl(&module)?.into()));
+
+    #[cfg(not(target_arch = "wasm32"))]
+    Ok(wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)))
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn emitted_wgsl(module: &Module) -> Result<String, Appearance3DAdmissionError> {
+    let [entry] = module.entry_points.as_slice() else {
+        return Err(internal_structure("controlled shader must have one entry point"));
+    };
     let info = validate_synthetic_module(module, "WGSL write validation")?;
     let emitted = naga::back::wgsl::write_string(
         module,
@@ -448,6 +461,15 @@ pub(crate) fn validate_wgsl_roundtrip(module: &Module) -> Result<(), Appearance3
     let reparsed = naga::front::wgsl::parse_str(&emitted)
         .map_err(|error| internal_error("WGSL reparse", error))?;
     let _ = validate_synthetic_module(&reparsed, "WGSL revalidation")?;
+    if reparsed.entry_points.len() != 1 || reparsed.entry_points[0].stage != entry.stage {
+        return Err(internal_structure("WGSL emission changed the controlled entry point"));
+    }
+    Ok(emitted)
+}
+
+#[cfg(test)]
+pub(crate) fn validate_wgsl_roundtrip(module: &Module) -> Result<(), Appearance3DAdmissionError> {
+    emitted_wgsl(module)?;
     Ok(())
 }
 
@@ -1669,11 +1691,20 @@ fn append_fragment_wrapper(
 
     let zero = append_expression(&mut function, Expression::ZeroValue(vec3_ty));
     let one = append_expression(&mut function, Expression::Literal(naga::Literal::F32(1.0)));
-    let largest_finite = append_expression(
+    let largest_finite_bits = append_expression(
         &mut function,
-        Expression::Literal(naga::Literal::F32(f32::MAX)),
+        Expression::Literal(naga::Literal::U32(f32::MAX.to_bits())),
     );
     emitter.start(&function.expressions);
+    // Preserve the exact finite bound without decimal rounding in WGSL backends.
+    let largest_finite = append_expression(
+        &mut function,
+        Expression::As {
+            expr: largest_finite_bits,
+            kind: ScalarKind::Float,
+            convert: None,
+        },
+    );
     let magnitude = append_expression(
         &mut function,
         Expression::Math {

@@ -12,8 +12,8 @@ use wgpu::util::DeviceExt;
 use crate::renderer::wgpu_renderer::GpuResources;
 
 use super::appearance::{
-    APPEARANCE_BLOCK_SIZE, AppearanceBlockBytes, FRAGMENT_ENTRY_POINT_NAME, OBJECT_BLOCK_SIZE,
-    ObjectBlockBytes, VERTEX_ENTRY_POINT_NAME, VIEW_BLOCK_SIZE, ViewBlockBytes,
+    APPEARANCE_BLOCK_SIZE, AppearanceBlockBytes, OBJECT_BLOCK_SIZE, ObjectBlockBytes,
+    VIEW_BLOCK_SIZE, ViewBlockBytes,
 };
 use super::context::{
     AppearanceGpuLease, AppearanceTextureGpuLease, DynamicStorageLease3D, GeometryGpuLease,
@@ -778,7 +778,8 @@ impl GpuState3D {
                     layout: Some(&self.pipeline_layout),
                     vertex: wgpu::VertexState {
                         module: &vertex_module,
-                        entry_point: Some(VERTEX_ENTRY_POINT_NAME),
+                        // Admission proves a sole stage entry; WGSL emission may rename it.
+                        entry_point: None,
                         buffers: &[Some(wgpu::VertexBufferLayout {
                             array_stride: CANONICAL_VERTEX_STRIDE,
                             step_mode: wgpu::VertexStepMode::Vertex,
@@ -788,7 +789,7 @@ impl GpuState3D {
                     },
                     fragment: Some(wgpu::FragmentState {
                         module: &fragment_module,
-                        entry_point: Some(FRAGMENT_ENTRY_POINT_NAME),
+                        entry_point: None,
                         targets: &targets,
                         compilation_options: Default::default(),
                     }),
