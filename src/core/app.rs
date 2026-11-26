@@ -7201,7 +7201,7 @@ fn paint_tree_reusing(
     retained_cache
         .interpolated_rects
         .clone_from(interpolated_rects);
-    tree.invalidate_changed_combo_popup_hits();
+    tree.invalidate_changed_popup_hits(scale_factor, interpolated_rects);
 
     let drag_state = active_drag.cloned();
 

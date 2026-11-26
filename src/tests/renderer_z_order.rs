@@ -3193,6 +3193,148 @@ fn switch_mouse_release_moves_stock_and_rounded_thumbs_on_metal() {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn date_time_picker_open_shells_are_contained_and_idle_on_metal() {
+    use crate::core::event::{FusedInputEvent, InteractionDomains, PointerButton, PointerDevice};
+    use crate::core::event_router::EventRouter;
+    use crate::core::layout::{EdgeInsets, FlexParams};
+    use crate::core::math::Point;
+    use crate::core::paint::{LAYER_CONTENT, LAYER_OVERLAY};
+    use crate::core::text_engine::TextEngine;
+    use crate::core::theme::ControlChromeState;
+    use crate::model::{date_value::DateValue, time_value::TimeValue};
+    use crate::runtime::binding_registry::BindingRegistry;
+    use crate::widgets::{
+        date_time_picker::{DateTimePicker, DateTimeSelection, DateTimeValue},
+        flex::Flex,
+        scroll_area::ScrollArea,
+    };
+    use web_time::Instant;
+
+    fn check_chrome(nodes: &[SceneNode], border: crate::core::paint::Color, accent: crate::core::paint::Color, scale: f32, counts: &mut [usize; 2]) {
+        for node in nodes {
+            match node {
+                SceneNode::Path(path) if path.is_stroke
+                    && [LAYER_CONTENT + 1, LAYER_OVERLAY + 3].contains(&path.z_index) =>
+                {
+                    assert_eq!(path.color, border.into(), "both joined fragments use idle input chrome");
+                    let outline_left = path.path.flatten().iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+                    let mesh_left = path.mesh.as_ref().expect("genuine stroke mesh").vertices.iter()
+                        .map(|p| p[0]).fold(f32::INFINITY, f32::min);
+                    assert!((2.0 * (outline_left - mesh_left) * scale - 1.0).abs() < 0.002,
+                        "the exterior stroke is one physical pixel");
+                    counts[0] += 1;
+                }
+                SceneNode::Rect(rect) if rect.z_index == LAYER_CONTENT + 3 && rect.color == accent.into() => {
+                    assert_eq!(rect.rect.height, 1.0, "retain the theme's captured underline width");
+                    counts[1] += 1;
+                }
+                SceneNode::Clip(node) => check_chrome(&node.children, border, accent, scale, counts),
+                SceneNode::Scroll(node) => check_chrome(&node.children, border, accent, scale, counts),
+                SceneNode::Layer(node) => check_chrome(&node.children, border, accent, scale, counts),
+                SceneNode::RetainedFragment(node) => check_chrome(&node.children, border, accent, scale, counts),
+                _ => {}
+            }
+        }
+    }
+
+    let date = |day| DateValue::new(2026, 11, day).unwrap();
+    let point = |hour, minute| DateTimeValue::new(date(2), TimeValue::new(hour, minute, None)).unwrap();
+    let values = [
+        ("date", DateTimeSelection::Date(date(2))),
+        ("time", DateTimeSelection::Time(TimeValue::new(14, 30, None))),
+        ("date-time", DateTimeSelection::DateTime(point(9, 7))),
+        ("date-range", DateTimeSelection::DateRange { start: date(2), end: date(6) }),
+        ("date-time-range", DateTimeSelection::DateTimeRange { start: point(9, 7), end: point(11, 30) }),
+    ];
+    let output = std::path::Path::new("target/datetime-popup-proof");
+    std::fs::create_dir_all(output).unwrap();
+    let mut captures = 0;
+    for (theme_name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+        for scale in [1.0_f32, 2.0] {
+            let (width, height) = (1100, 900);
+            let (mut renderer, compositor, surface) =
+                setup_with_size_and_scale(width, height, scale).expect("DateTimePicker proof requires Metal");
+            assert_eq!(renderer.gpu_resources().adapter.get_info().backend, wgpu::Backend::Metal);
+            renderer.text_engine_mut().set_scale(scale);
+            for (mode, value) in values {
+                let mut tree = WidgetTree::new();
+                let root = tree.create_root(Box::new(Flex::column().with_padding(EdgeInsets {
+                    left: 4.0, top: 99.0, right: 4.0, bottom: 0.0,
+                })), None, 0);
+                let scroll = tree.add_child(root, Box::new(ScrollArea::new_unwired()), None, 0);
+                tree.set_flex(scroll, FlexParams::fixed(466.2705));
+                let content = tree.add_child(scroll, Box::new(Flex::column().with_padding(EdgeInsets {
+                    left: 16.0, top: 770.4834, right: 0.0, bottom: 600.0,
+                })), None, 0);
+                tree.node_mut(scroll).unwrap().widget.as_any_mut().downcast_mut::<ScrollArea>().unwrap().wire_content(content);
+                let control = tree.add_child(content, Box::new(DateTimePicker::new(value).unwrap().with_width(519.0)), None, 0);
+                let owner = tree.node(control).unwrap().id;
+                let mut domains = InteractionDomains::new();
+                let mut harness = RetainedSceneTestHarness::new();
+                let frame = |renderer: &mut WgpuRenderer, tree: &mut WidgetTree, harness: &mut RetainedSceneTestHarness, domains: &InteractionDomains| {
+                    let target = renderer.custom_render_target_snapshot(surface).unwrap();
+                    harness.frame_with_optional_custom_render_target(
+                        tree, root, Constraints::tight(Size::new(width as f32, height as f32)),
+                        &theme, renderer.text_engine_mut(), &builtin_registry(), Some(target),
+                        Some((domains, WindowId::PRIMARY)),
+                    )
+                };
+                frame(&mut renderer, &mut tree, &mut harness, &domains);
+                tree.node_mut(scroll).unwrap().widget.as_any_mut().downcast_mut::<ScrollArea>().unwrap().jump_to_y(356.2129);
+                tree.mark_paint_dirty(scroll);
+                frame(&mut renderer, &mut tree, &mut harness, &domains);
+                let anchor = tree.get_absolute_paint_rect(control).unwrap();
+                let offset = tree.cumulative_scroll_offset(control);
+                let mut router = EventRouter::new();
+                for event in [
+                    FusedInputEvent::FocusChanged { window_id: WindowId::PRIMARY, time: Instant::now(), focused: true },
+                    FusedInputEvent::PointerDown {
+                        window_id: WindowId::PRIMARY, time: Instant::now(),
+                        pos: Point::new(anchor.x - offset.0 + 10.0, anchor.y - offset.1 + 10.0),
+                        device: PointerDevice::Mouse, button: PointerButton::Primary, click_count: 1,
+                    },
+                ] {
+                    router.route_input_event(&mut tree, event, Some(root), renderer.text_engine_mut(), None,
+                        domains.primary_state_mut(), &mut BindingRegistry::new());
+                }
+                for below in [false, true] {
+                if below {
+                    tree.set_flex(scroll, FlexParams::fixed(780.0));
+                    tree.mark_layout_dirty(root);
+                }
+                let opened = frame(&mut renderer, &mut tree, &mut harness, &domains);
+                let overlay = harness.overlay_fragment(owner).unwrap();
+                let SceneNode::Clip(clip) = &overlay[0] else { panic!("actual popup exterior clip") };
+                let popup = clip.rect.translate(-offset.0, -offset.1);
+                let admitted = tree.own_presentation_geometry(control, scale).unwrap().clip;
+                assert_eq!(popup.intersection(&admitted), Some(popup), "{theme_name} {mode} {scale}x");
+                if below {
+                    assert!(popup.y >= anchor.bottom() - offset.1 - 1.0 / scale);
+                } else {
+                    assert!(popup.bottom() <= anchor.y - offset.1 + 1.0 / scale);
+                }
+                let mut counts = [0, 0];
+                check_chrome(&opened.scene_root, theme.input_chrome(ControlChromeState::Idle).chrome.border_color,
+                    theme.colors.accents.primary, scale, &mut counts);
+                assert_eq!(counts, [2, 1], "{theme_name} {mode} {scale}x: exterior fragments and actual capture cue");
+                let mut scene = SceneBuilder::new();
+                scene.push_retained_fragment(opened.scene_root.into());
+                let rgba = render_scene_at_scale(&mut renderer, &compositor, surface, scene.build(), scale);
+                assert!(rgba.chunks_exact(4).filter(|p| p[..3] != [0, 0, 0]).count() > 1000);
+                let mut ppm = format!("P6\n{} {}\n255\n", (width as f32 * scale) as u32, (height as f32 * scale) as u32).into_bytes();
+                for pixel in rgba.chunks_exact(4) { ppm.extend_from_slice(&pixel[..3]); }
+                let placement = if below { "-below" } else { "" };
+                std::fs::write(output.join(format!("native-{theme_name}-{mode}{placement}-dpr{scale}.ppm")), ppm).unwrap();
+                captures += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(captures, 40);
+}
+
 #[cfg(target_os="macos")]
 #[test]
 fn frosted_glass_real_metal_current_prefix_gaussian_and_replacement_1x_2x() {

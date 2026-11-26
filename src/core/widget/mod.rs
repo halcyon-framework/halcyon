@@ -1045,17 +1045,27 @@ impl<'a> PaintContext<'a> {
     }
 
     pub(crate) fn own_presentation_geometry(&self) -> Option<OwnedWidgetPresentationGeometry> {
-        let node = self.current_node?;
-        let geometry = self
-            .tree
-            .own_presentation_geometry(node, self.scale_factor)?;
+        Self::presentation_geometry_for_node(
+            self.tree,
+            self.current_node?,
+            self.scale_factor,
+            self.interpolated_rects,
+        )
+    }
+
+    pub(crate) fn presentation_geometry_for_node(
+        tree: &WidgetTree,
+        node: crate::core::widget_tree::NodeId,
+        scale_factor: f32,
+        interpolated_rects: &crate::core::layout_transition::InterpolatedVisualRects,
+    ) -> Option<OwnedWidgetPresentationGeometry> {
+        let geometry = tree.own_presentation_geometry(node, scale_factor)?;
         let mut ancestor = Some(node);
         while let Some(id) = ancestor {
-            let current = self.tree.node(id)?;
-            if self
-                .interpolated_rects
+            let current = tree.node(id)?;
+            if interpolated_rects
                 .get(&current.id)
-                .is_some_and(|visual| Some(*visual) != self.tree.get_absolute_paint_rect(id))
+                .is_some_and(|visual| Some(*visual) != tree.get_absolute_paint_rect(id))
             {
                 return None;
             }

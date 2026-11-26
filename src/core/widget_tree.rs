@@ -3635,11 +3635,33 @@ impl WidgetTree {
 
     /// A clean fragment can be reused only while the overlay's placement basis
     /// still matches. Scroll and viewport changes need not move its layout rect.
-    pub(crate) fn invalidate_changed_combo_popup_hits(&mut self) {
+    pub(crate) fn invalidate_changed_popup_hits(
+        &mut self,
+        scale_factor: f32,
+        interpolated_rects: &crate::core::layout_transition::InterpolatedVisualRects,
+    ) {
         for index in 0..self.overlay_hit_regions.len() {
             let entry = &self.overlay_hit_regions[index];
-            if entry.combo_popup.is_some() && self.qualified_combo_popup(entry).is_none() {
-                self.mark_paint_dirty_by_widget_id(entry.region.widget_id);
+            let owner = entry.region.widget_id;
+            let combo_changed =
+                entry.combo_popup.is_some() && self.qualified_combo_popup(entry).is_none();
+            let date_time_changed = self.find_by_id(owner).is_some_and(|node| {
+                self.node(node)
+                    .and_then(|entry| {
+                        entry.widget.as_any()
+                            .downcast_ref::<crate::widgets::date_time_picker::DateTimePicker>()
+                    })
+                    .is_some_and(|picker| {
+                        !picker.popup_projection_matches(PaintContext::presentation_geometry_for_node(
+                            self,
+                            node,
+                            scale_factor,
+                            interpolated_rects,
+                        ))
+                    })
+            });
+            if combo_changed || date_time_changed {
+                self.mark_paint_dirty_by_widget_id(owner);
             }
         }
     }

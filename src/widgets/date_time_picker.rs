@@ -8,13 +8,13 @@ use crate::core::event::{
 };
 use crate::core::icon::IconId;
 use crate::core::layout::{Constraints, LayoutResult};
-use crate::core::math::{RectF, Size};
+use crate::core::math::{RectF, Size, snap_to_physical};
 use crate::core::paint::{Color, LAYER_CONTENT, LAYER_OVERLAY, RoundedCorners};
 use crate::core::popup::compute_popup_rect;
 use crate::core::text_engine::compute_control_text_baseline_y;
 use crate::core::theme::{ControlChromeCategory, ControlChromeState};
 use crate::core::widget::{EventContext, LayoutContext, PaintContext, Widget, WidgetDowncast};
-use crate::core::widget_tree::{NodeId, OverlayHitRegion};
+use crate::core::widget_tree::{NodeId, OverlayHitRegion, OwnedWidgetPresentationGeometry};
 use crate::model::date_time::{CalendarView, CivilDateBounds, DateTimeSelectionState};
 use crate::model::date_value::DateValue;
 use crate::model::time_value::{TimeDisplayMode, TimeValue};
@@ -150,27 +150,31 @@ impl Default for PickerGeometry {
 /// One popup placement at the existing traversal boundary. Scene primitives are
 /// authored before the ancestor ScrollNode; event/hit sidecars use its resolved
 /// absolute logical projection. Neither path independently chooses a position.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct PopupPlacement {
     paint: RectF,
     window: RectF,
     anchor_window: RectF,
+    visible_window: RectF,
+    presentation: Option<OwnedWidgetPresentationGeometry>,
 }
 
 impl PopupPlacement {
-    fn new(anchor: RectF, scroll: (f32, f32), viewport: (f32, f32), size: Size) -> Self {
+    fn new(anchor: RectF, scroll: (f32, f32), bounds: RectF, size: Size) -> Self {
         let anchor_window = RectF::new(
             anchor.x - scroll.0,
             anchor.y - scroll.1,
             anchor.width,
             anchor.height,
         );
-        let (window, _) = compute_popup_rect(
-            anchor_window,
+        let (local, _) = compute_popup_rect(
+            anchor_window.translate(-bounds.x, -bounds.y),
             size.width,
             size.height,
-            viewport.0,
-            viewport.1,
+            bounds.width,
+            bounds.height,
         );
+        let window = local.translate(bounds.x, bounds.y);
         let paint = RectF::new(
             window.x + scroll.0,
             window.y + scroll.1,
@@ -181,6 +185,8 @@ impl PopupPlacement {
             paint,
             window,
             anchor_window,
+            visible_window: window.intersection(&bounds).unwrap_or(RectF::zero()),
+            presentation: None,
         }
     }
 
@@ -308,7 +314,7 @@ pub struct DateTimePicker {
     dragging_column: Option<Column>,
     scroll: [PanelScroll; 5],
     geometry: PickerGeometry,
-    popup_rect: Cell<RectF>,
+    popup_projection: Cell<PopupPlacement>,
     availability: Availability,
     on_commit: Option<Box<dyn FnMut(DateTimeSelection)>>,
     width: Option<f32>,
@@ -340,7 +346,7 @@ impl DateTimePicker {
             dragging_column: None,
             scroll: std::array::from_fn(|_| PanelScroll::default()),
             geometry: PickerGeometry::default(),
-            popup_rect: Cell::new(RectF::zero()),
+            popup_projection: Cell::new(PopupPlacement::default()),
             availability: Availability::default(),
             on_commit: None,
             width: None,
@@ -1111,12 +1117,33 @@ impl DateTimePicker {
     }
 
     fn popup_placement(&self, cx: &PaintContext, rect: RectF) -> PopupPlacement {
-        PopupPlacement::new(
-            rect,
-            cx.cumulative_scroll_offset_for_paint(),
-            cx.viewport_size(),
-            self.geometry.size,
-        )
+        let presentation = cx.own_presentation_geometry();
+        let (scroll, bounds) = if let Some(presentation) = presentation {
+            (presentation.cumulative_scroll, presentation.clip)
+        } else {
+            let (width, height) = cx.viewport_size();
+            (cx.cumulative_scroll_offset_for_paint(), RectF::new(0.0, 0.0, width, height))
+        };
+        let mut placement = PopupPlacement::new(rect, scroll, bounds, self.geometry.size);
+        placement.presentation = presentation;
+        if let Some(presentation) = presentation {
+            let painted_popup = placement.chrome_geometry(rect, cx.scale_factor).popup
+                .translate(-presentation.cumulative_scroll.0, -presentation.cumulative_scroll.1);
+            placement.visible_window = placement.visible_window.intersection(&painted_popup)
+                .unwrap_or(RectF::zero());
+        } else {
+            // Rounded, interpolated and unbound contexts retain the existing
+            // root-only behavior; they do not qualify rectangular containment.
+            placement.visible_window = placement.window;
+        }
+        placement
+    }
+
+    pub(crate) fn popup_projection_matches(
+        &self,
+        presentation: Option<OwnedWidgetPresentationGeometry>,
+    ) -> bool {
+        !self.popup_open || self.popup_projection.get().presentation == presentation
     }
 
     fn translated(rect: RectF, origin: RectF) -> RectF {
@@ -1403,8 +1430,8 @@ impl Widget for DateTimePicker {
         if self.popup_open {
             let placement = self.popup_placement(cx, rect);
             let geometry = placement.chrome_geometry(rect, cx.scale_factor);
-            let edge = (style.chrome.border_width * cx.scale_factor).round().max(1.0)
-                / cx.scale_factor;
+            let edge = cx.one_px();
+            let border = theme.input_chrome(ControlChromeState::Idle).chrome.border_color;
             cx.scene.begin_clip(geometry.control, None);
             cx.scene.push_path(
                 geometry.fill_outline(radius, edge),
@@ -1418,7 +1445,7 @@ impl Widget for DateTimePicker {
                     width: edge.min(geometry.popup.height),
                     ..Default::default()
                 },
-                style.chrome.border_color,
+                border,
                 LAYER_CONTENT + 1,
                 None,
             );
@@ -1431,6 +1458,39 @@ impl Widget for DateTimePicker {
                 );
             }
             cx.scene.end_clip();
+            if matches!(state, ControlChromeState::Focused | ControlChromeState::Captured) {
+                let width = if cx.has_capture() {
+                    theme.focus_ring.captured_width
+                } else {
+                    theme.focus_ring.focused_width
+                };
+                let scale = cx.scale_factor;
+                let height = snap_to_physical(width, scale).max(edge).min(rect.height - edge);
+                let left = snap_to_physical(rect.x + theme.geometry.text_field.padding_x, scale);
+                let right = snap_to_physical(rect.right() - theme.geometry.text_field.padding_x, scale);
+                let bottom = snap_to_physical(rect.bottom() - edge, scale);
+                let underline = RectF::new(left, bottom - height, right - left, height);
+                if underline.width > 0.0
+                    && underline.height > 0.0
+                    && [
+                        underline.x,
+                        underline.y,
+                        underline.width,
+                        underline.height,
+                        underline.right(),
+                        underline.bottom(),
+                    ]
+                    .into_iter()
+                    .all(f32::is_finite)
+                {
+                    cx.scene.push_rect(
+                        underline,
+                        theme.colors.accents.primary,
+                        LAYER_CONTENT + 3,
+                        None,
+                    );
+                }
+            }
         } else {
             cx.scene.push_rounded_rect(
                 rect,
@@ -1500,17 +1560,19 @@ impl Widget for DateTimePicker {
         let (viewport_width, viewport_height) = cx.viewport_size();
         let placement = self.popup_placement(cx, rect);
         let popup = placement.paint;
-        self.popup_rect.set(placement.window);
+        self.popup_projection.set(placement);
         cx.register_overlay_hit_region(OverlayHitRegion {
             abs_rect: RectF::new(0.0, 0.0, viewport_width, viewport_height),
             owner_abs_rect: placement.anchor_window,
             widget_id: owner,
         });
-        cx.register_overlay_hit_region(OverlayHitRegion {
-            abs_rect: placement.window,
-            owner_abs_rect: placement.anchor_window,
-            widget_id: owner,
-        });
+        if placement.visible_window.width > 0.0 && placement.visible_window.height > 0.0 {
+            cx.register_overlay_hit_region(OverlayHitRegion {
+                abs_rect: placement.visible_window,
+                owner_abs_rect: placement.anchor_window,
+                widget_id: owner,
+            });
+        }
         let theme = cx.theme;
         let style = theme.input_chrome(if cx.has_capture() {
             ControlChromeState::Captured
@@ -1534,8 +1596,7 @@ impl Widget for DateTimePicker {
             theme.geometry.text_field.radius,
             false,
         );
-        let edge = (chrome_style.chrome.border_width * cx.scale_factor).round().max(1.0)
-            / cx.scale_factor;
+        let edge = cx.one_px();
         let geometry = placement.chrome_geometry(rect, cx.scale_factor);
         let corners = geometry.corners(geometry.popup, chrome_radius, edge);
         // A separate popup shadow would cross the joined attachment. The
@@ -1911,7 +1972,7 @@ impl Widget for DateTimePicker {
                 width: edge.min(geometry.popup.height),
                 ..Default::default()
             },
-            chrome_style.chrome.border_color,
+            theme.input_chrome(ControlChromeState::Idle).chrome.border_color,
             LAYER_OVERLAY + 3,
             None,
         );
@@ -1955,10 +2016,11 @@ impl Widget for DateTimePicker {
                     }
                     return false;
                 }
-                let popup = self.popup_rect.get();
+                let projection = self.popup_projection.get();
+                let popup = projection.window;
                 let x = pointer.global_pos.0 - popup.x;
                 let y = pointer.global_pos.1 - popup.y;
-                let in_popup = popup.contains_point(pointer.global_pos.0, pointer.global_pos.1);
+                let in_popup = projection.visible_window.contains_point(pointer.global_pos.0, pointer.global_pos.1);
                 match pointer.kind {
                     PointerEventKind::Move => {
                         let hovered = in_popup.then(|| self.hit(x, y)).flatten();
@@ -2227,6 +2289,188 @@ mod tests {
 
     fn date(day: u8) -> DateValue {
         DateValue::new(2026, 11, day).unwrap()
+    }
+
+    #[test]
+    fn date_time_picker_clip_local_placement_preserves_natural_size_and_visible_input() {
+        let clip = RectF::new(4.0, 99.0, 1092.0, 466.2705);
+        let scroll = (0.0, 356.2129);
+        let size = Size::new(508.0, 280.0);
+        let anchor = RectF::new(20.0, 869.4834, 519.0, 28.0);
+        let above = PopupPlacement::new(anchor, scroll, clip, size);
+        assert!((above.window.bottom() - above.anchor_window.y).abs() < 0.0001);
+        assert_eq!(above.visible_window, above.window);
+        assert_eq!((above.window.width, above.window.height), (size.width, size.height));
+        assert_eq!(above.paint, above.window.translate(scroll.0, scroll.1));
+
+        let anchor = RectF::new(20.0, 506.2129, 519.0, 28.0);
+        let below = PopupPlacement::new(anchor, scroll, clip, size);
+        assert_eq!(below.window.y, below.anchor_window.bottom());
+        assert_eq!(below.visible_window, below.window);
+
+        let no_fit = RectF::new(40.0, 80.0, 360.0, 120.0);
+        let placement = PopupPlacement::new(RectF::new(80.0, 130.0, 160.0, 28.0), (0.0, 0.0), no_fit, size);
+        assert_eq!((placement.window.width, placement.window.height), (size.width, size.height));
+        assert_eq!(placement.visible_window, placement.window.intersection(&no_fit).unwrap());
+        assert_ne!(placement.visible_window, placement.window);
+        assert!(placement.window.contains_point(placement.window.right() - 1.0, placement.window.bottom() - 1.0));
+        assert!(!placement.visible_window.contains_point(placement.window.right() - 1.0, placement.window.bottom() - 1.0));
+    }
+
+    #[test]
+    fn date_time_picker_unqualified_context_preserves_root_only_placement() {
+        let theme = crate::core::theme::Theme::light();
+        let timeline = crate::core::animation::Timeline::new();
+        let mut picker = DateTimePicker::new(DateTimeSelection::Date(date(2))).unwrap();
+        picker.geometry.size = Size::new(400.0, 244.0);
+        let anchor = RectF::new(35.0, 80.0, 200.0, 28.0);
+        crate::widgets::radio_button::tests::radio_paint(&timeline, &theme, |cx| {
+            assert!(cx.own_presentation_geometry().is_none());
+            let (width, height) = cx.viewport_size();
+            let expected = compute_popup_rect(anchor, 400.0, 244.0, width, height).0;
+            let projection = picker.popup_placement(cx, anchor);
+            assert_eq!(projection.window, expected);
+            assert_eq!(projection.visible_window, expected);
+            assert!(projection.presentation.is_none());
+        });
+    }
+
+    #[test]
+    fn date_time_picker_retained_clip_projection_refreshes_scroll_and_resize() {
+        use crate::core::app::RetainedSceneTestHarness;
+        use crate::core::event::{FusedInputEvent, InteractionDomains, PointerDevice, WindowId};
+        use crate::core::event_router::EventRouter;
+        use crate::core::layout::FlexParams;
+        use crate::core::math::Point;
+        use crate::core::theme::Theme;
+        use crate::core::widget_tree::WidgetTree;
+        use crate::renderer::wgpu_renderer::WgpuRenderer;
+        use crate::runtime::binding_registry::BindingRegistry;
+        use crate::widgets::{flex::Flex, scroll_area::ScrollArea};
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        fn control(tree: &WidgetTree, node: NodeId) -> &DateTimePicker {
+            tree.node(node).unwrap().widget().as_any().downcast_ref().unwrap()
+        }
+        fn assert_fitting_projection(tree: &WidgetTree, node: NodeId, harness: &RetainedSceneTestHarness) {
+            let picker = control(tree, node);
+            let projection = picker.popup_projection.get();
+            let admitted = tree.own_presentation_geometry(node, 1.0).unwrap();
+            assert_eq!(projection.window.intersection(&admitted.clip), Some(projection.window));
+            let overlay = harness.overlay_fragment(tree.node(node).unwrap().id).unwrap();
+            let crate::core::scene::SceneNode::Clip(clip) = &overlay[0] else { panic!("actual popup clip") };
+            let painted = clip.rect.translate(-admitted.cumulative_scroll.0, -admitted.cumulative_scroll.1);
+            assert_eq!(projection.visible_window.intersection(&painted), Some(projection.visible_window));
+            let apply = picker.geometry.apply;
+            assert!(projection.visible_window.contains_point(
+                projection.window.x + apply.x + apply.width * 0.5,
+                projection.window.y + apply.y + apply.height * 0.5,
+            ));
+        }
+        let mut renderer = pollster::block_on(WgpuRenderer::new_headless()).expect("native text owner required");
+        let theme = Theme::light();
+        let icons = crate::core::icons::builtin_registry();
+        let mut tree = WidgetTree::new();
+        let root = tree.create_root(Box::new(Flex::column().with_padding(
+            crate::core::layout::EdgeInsets { left: 4.0, top: 99.0, right: 4.0, bottom: 0.0 },
+        )), None, 0);
+        let scroll = tree.add_child(root, Box::new(ScrollArea::new_unwired()), None, 0);
+        tree.set_flex(scroll, FlexParams::fixed(466.2705));
+        let content = tree.add_child(scroll, Box::new(Flex::column().with_padding(
+            crate::core::layout::EdgeInsets { left: 16.0, top: 770.4834, right: 0.0, bottom: 600.0 },
+        )), None, 0);
+        tree.node_mut(scroll).unwrap().widget.as_any_mut().downcast_mut::<ScrollArea>().unwrap().wire_content(content);
+        let value = DateTimeSelection::DateTimeRange {
+            start: DateTimeValue::new(date(2), TimeValue::new(9, 7, None)).unwrap(),
+            end: DateTimeValue::new(date(2), TimeValue::new(11, 30, None)).unwrap(),
+        };
+        let node = tree.add_child(content, Box::new(DateTimePicker::new(value).unwrap().with_width(519.0)), None, 0);
+        let owner = tree.node(node).unwrap().id;
+        let mut harness = RetainedSceneTestHarness::new();
+        let mut domains = InteractionDomains::new();
+        let mut frame = |tree: &mut WidgetTree, harness: &mut RetainedSceneTestHarness, domains: &InteractionDomains| {
+            harness.frame_with_appearance(
+                tree, root, Constraints::tight(Size::new(1100.0, 900.0)),
+                &theme, renderer.text_engine_mut(), &icons, domains, WindowId::PRIMARY,
+            )
+        };
+        frame(&mut tree, &mut harness, &domains);
+        tree.node_mut(scroll).unwrap().widget.as_any_mut().downcast_mut::<ScrollArea>().unwrap().jump_to_y(356.2129);
+        tree.mark_paint_dirty(scroll);
+        frame(&mut tree, &mut harness, &domains);
+        let anchor = tree.get_absolute_paint_rect(node).unwrap();
+        let offset = tree.cumulative_scroll_offset(node);
+        let mut router = EventRouter::new();
+        router.route_input_event(
+            &mut tree,
+            FusedInputEvent::PointerDown {
+                window_id: WindowId::PRIMARY, time: Instant::now(),
+                pos: Point::new(anchor.x - offset.0 + 10.0, anchor.y - offset.1 + 10.0),
+                device: PointerDevice::Mouse, button: PointerButton::Primary, click_count: 1,
+            },
+            Some(root), renderer.text_engine_mut(), None, domains.primary_state_mut(), &mut BindingRegistry::new(),
+        );
+        let mut frame = |tree: &mut WidgetTree, harness: &mut RetainedSceneTestHarness| {
+            harness.frame_with_appearance(
+                tree, root, Constraints::tight(Size::new(1100.0, 900.0)),
+                &theme, renderer.text_engine_mut(), &icons, &domains, WindowId::PRIMARY,
+            )
+        };
+        frame(&mut tree, &mut harness);
+        let anchor = tree.get_absolute_paint_rect(node).unwrap();
+        let picker = control(&tree, node);
+        assert!(picker.popup_open);
+        let initial = picker.popup_projection.get();
+        let size = picker.geometry.size;
+        assert_eq!(size.height, picker.geometry.apply.bottom() + theme.geometry.time_picker.popup_padding);
+        assert!(initial.window.y < initial.anchor_window.y);
+        assert_fitting_projection(&tree, node, &harness);
+        println!("DateTimeRange complete natural popup {size:?}, clip {:?}, projection {initial:?}", tree.own_presentation_geometry(node, 1.0).unwrap().clip);
+        let warm = harness.overlay_fragment(owner).unwrap();
+        frame(&mut tree, &mut harness);
+        assert!(Arc::ptr_eq(&warm, &harness.overlay_fragment(owner).unwrap()));
+
+        tree.node_mut(scroll).unwrap().widget.as_any_mut().downcast_mut::<ScrollArea>().unwrap().jump_to_y(380.2129);
+        tree.mark_paint_dirty(scroll);
+        frame(&mut tree, &mut harness);
+        let offset = tree.cumulative_scroll_offset(node);
+        let scrolled = control(&tree, node).popup_projection.get();
+        assert_eq!(scrolled.anchor_window, anchor.translate(-offset.0, -offset.1), "open popup must refresh its window-space hit projection after ancestor scroll");
+        assert_ne!(scrolled.anchor_window, initial.anchor_window);
+        assert_fitting_projection(&tree, node, &harness);
+
+        tree.set_flex(scroll, FlexParams::fixed(780.0));
+        tree.mark_layout_dirty(root);
+        frame(&mut tree, &mut harness);
+        let resized = control(&tree, node).popup_projection.get();
+        assert_eq!(resized.window.y, resized.anchor_window.bottom(), "newly available space below must be used after ancestor resize");
+        assert_fitting_projection(&tree, node, &harness);
+        assert_eq!(control(&tree, node).geometry.size, size);
+
+        tree.set_flex(scroll, FlexParams::fixed(160.0));
+        tree.mark_layout_dirty(root);
+        frame(&mut tree, &mut harness);
+        let picker = control(&tree, node);
+        let no_fit = picker.popup_projection.get();
+        let apply = picker.geometry.apply;
+        let hidden_apply = Point::new(
+            no_fit.window.x + apply.x + apply.width * 0.5,
+            no_fit.window.y + apply.y + apply.height * 0.5,
+        );
+        assert_ne!(no_fit.visible_window, no_fit.window);
+        assert!(no_fit.window.contains(hidden_apply));
+        assert!(!no_fit.visible_window.contains(hidden_apply));
+        router.route_input_event(
+            &mut tree,
+            FusedInputEvent::PointerDown {
+                window_id: WindowId::PRIMARY, time: Instant::now(), pos: hidden_apply,
+                device: PointerDevice::Mouse, button: PointerButton::Primary, click_count: 1,
+            },
+            Some(root), renderer.text_engine_mut(), None, domains.primary_state_mut(), &mut BindingRegistry::new(),
+        );
+        assert!(!control(&tree, node).popup_open, "the invisible footer is backdrop dismissal, not an Apply hit");
+        assert_eq!(control(&tree, node).value(), value);
     }
 
     // Local owner semantics only; this is not native/routed Capture evidence.
@@ -2632,7 +2876,7 @@ mod tests {
                 _ => picker.geometry.columns.iter().flat_map(|column| &column.rows)
                     .find(|row| row.target == target).unwrap().rect,
             };
-            let popup = picker.popup_rect.get();
+            let popup = picker.popup_projection.get().window;
             Point::new(popup.x + rect.x + rect.width * 0.5, popup.y + rect.y + rect.height * 0.5)
         }
 
@@ -2692,7 +2936,7 @@ mod tests {
             assert!(!picker.selected(Target::Minute(7)));
             assert!(picker.selected(Target::Minute(15)));
             assert_eq!(rows(picker), before, "minute selection must not remove or move rows");
-            let popup = picker.popup_rect.get();
+            let popup = picker.popup_projection.get().window;
             assert_eq!(picker.hit(minute.x - popup.x, minute.y - popup.y), Some(Target::Minute(15)));
 
             // Capture dismissal retains the draft and this exact minute projection.
@@ -2846,7 +3090,7 @@ mod tests {
             let before = column.scroll;
             let row = picker.geometry.row_height;
             assert!(before >= row * 2.0);
-            let popup = picker.popup_rect.get();
+            let popup = picker.popup_projection.get().window;
             let position = Point::new(
                 popup.x + column.body.x + column.body.width * 0.5,
                 popup.y + column.body.y + column.body.height * 0.5,
@@ -2932,7 +3176,7 @@ mod tests {
             .find(|column| column.kind == Column::Year)
             .unwrap();
         let body = column.body;
-        let popup = picker.popup_rect.get();
+        let popup = picker.popup_projection.get().window;
         let content = column.count as f32 * picker.geometry.row_height;
         let layout = picker.scroll[0].bar.layout(
             RectF::new(0.0, 0.0, body.width, body.height),
@@ -3171,8 +3415,8 @@ mod tests {
                 .as_any()
                 .downcast_ref::<DateTimePicker>()
                 .unwrap()
-                .popup_rect
-                .get();
+                .popup_projection
+                .get().window;
             assert!(popup.contains_point(point.x, point.y));
             assert!(popup.x >= 0.0 && popup.right() <= 900.0);
             assert!(popup.y >= 0.0 && popup.bottom() <= viewport_height);
@@ -3207,7 +3451,7 @@ mod tests {
             assert!(
                 control.hovered == Some(Target::Day(date(3))),
                 "painted day point={point:?}, cached popup={:?}, ancestor scroll={offset:?}",
-                control.popup_rect.get()
+                control.popup_projection.get().window
             );
             let hovered = frame(&mut tree, &mut renderer, &domains);
             assert_eq!(day_point(&hovered.scene_root, (0.0, 0.0)), Some(point));

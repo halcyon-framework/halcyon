@@ -6,6 +6,7 @@ All notable changes to the Halcyon UI framework.
 
 Local release candidate.
 
+- **DateTimePicker popups** — Resolve placement against the admitted rectangular ancestor clip and refresh retained paint/hit projection after scroll or resize. Limit fallback interaction to visible popup geometry. The open joined shell uses an idle border one physical pixel wide and a trigger-only focus/capture underline; unqualified geometry retains existing placement behavior.
 - **Browser 3D shader realization** — Emit validated controlled shader IR as WGSL for WebGPU, select its sole entry point, and preserve the finite-color bound through an exact bitcast. This corrects the Showcase Viewport 3D pipeline creation failure on the observed browser; broader browser conformance remains unverified.
 - **SystemUI source-range effects on macOS** — Use tight CoreText outline bounds from the admitted font bytes when the parser cannot supply a selected monochrome glyph’s outline. This restores selected foreground and outline-positioned glow effects without changing the original text layout.
 - **Switch activation** — Commit a captured mouse press once on release inside the control. Pointer exit, outside release, capture loss, and disabling cancel the pending activation.
