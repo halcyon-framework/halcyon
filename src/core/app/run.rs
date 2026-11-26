@@ -116,6 +116,8 @@ impl App {
                 false,
                 #[cfg(target_arch = "wasm32")]
                 choice_overlay.clone(),
+                #[cfg(target_arch = "wasm32")]
+                Some(self.config.web_context_menu_enabled),
             );
             #[cfg(not(target_arch = "wasm32"))]
             let platform_density = window_obj.scale_factor;

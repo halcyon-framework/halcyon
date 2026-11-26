@@ -102,6 +102,8 @@ impl Window {
             event_loop, title, width, height, endpoint, false, true,
             #[cfg(target_arch = "wasm32")]
             None,
+            #[cfg(target_arch = "wasm32")]
+            None,
         )
     }
 
@@ -114,13 +116,18 @@ impl Window {
         fullscreen: bool,
         visible: bool,
         #[cfg(target_arch = "wasm32")] input_overlay: Option<web_sys::HtmlElement>,
+        #[cfg(target_arch = "wasm32")] context_menu_enabled: Option<bool>,
     ) -> Self {
         let window_attributes =
             Self::creation_attributes(title, width, height, fullscreen, visible);
         #[cfg(target_arch = "wasm32")]
         let window_attributes = {
             use winit::platform::web::WindowAttributesExtWebSys;
-            window_attributes.with_input_overlay(input_overlay)
+            let window_attributes = window_attributes.with_input_overlay(input_overlay);
+            match context_menu_enabled {
+                Some(enabled) => window_attributes.with_context_menu_enabled(enabled),
+                None => window_attributes,
+            }
         };
 
         #[allow(deprecated)]

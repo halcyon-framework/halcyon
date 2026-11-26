@@ -739,3 +739,53 @@ fixture rather than actual hardware, identify that evidence accordingly.
 Do not require a new general fault-injection system. This addition
 does not define recovery from device loss, runtime GPU validation
 failures, or arbitrary programming errors.
+
+# 19. Independent browser context-menu policy — Binding Addition (2026-11-26)
+
+**Status: Accepted / Binding.** JC approved permitting the standard
+browser context menu on Website while preserving existing application
+input behavior.
+
+Add the WASM-only `AppConfig::with_web_context_menu_enabled(self,
+enabled: bool) -> Self`. Its default false retains the canonical
+App's present contextmenu suppression. True permits the browser's
+ordinary contextmenu default action on the App's own canvas. This
+is a startup configuration carried to the existing window-creation
+boundary, not application-global mutable state. The host may display
+its own browser menu; Halcyon does not implement or synthesize that
+menu. All current routed pointer events and application menu
+semantics are unchanged. Existing native paths are unchanged.
+
+The Winit Web transport owns default cancellation on its canvas.
+Add the WASM `WindowAttributesExtWebSys::with_context_menu_enabled(
+self, enabled: bool) -> Self` creation attribute to the existing
+Halcyon derivative. Use an optional override, unset by default:
+when unset, the contextmenu listener follows its existing
+prevent_default value; when explicitly set, suppress that event
+only when the selected menu policy is false. Pass the App's explicit
+selection at canonical Web window creation. Low-level window callers
+retain the previous default. Do not modify any other default-event
+policy, including wheel, pointer, keyboard/clipboard, touch-action
+or host choice controls. No capture listener which intercepts other
+listeners, global prevent_default toggle, DOM overlay, or second
+routing authority is admitted.
+
+The published halcyon-winit 0.30.12 is immutable. The next local
+derivative revision is halcyon-winit 0.30.13, based on the same upstream
+winit 0.30.12, with the independent contextmenu option as its only
+new transport behavior. Update its package metadata and lock and
+Halcyon's WASM dependency pin consistently; native upstream winit
+remains exactly 0.30.12. Retain the same Rust library identity and
+existing patched input behavior. Document the derivative revision
+and update current installation guidance where it identifies the
+helper version, not historical evidence. This authorizes local
+preparation only, not registry publication.
+
+Qualification: compare ordinary real browser contextmenu event
+cancellation on the canonical canvas with default and enabled App
+configuration; verify the unchanged ordinary routed right-click and
+primary activation paths and default wheel/key policy. Use the
+existing browser test route; report event default-prevention evidence
+as such, not physical browser-menu observation. Native and WASM
+compilation must pass. No new general test harness or unrelated
+transport changes.

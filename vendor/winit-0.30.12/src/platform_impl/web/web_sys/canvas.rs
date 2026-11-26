@@ -35,6 +35,7 @@ pub struct Canvas {
     id: WindowId,
     pub has_focus: Rc<Cell<bool>>,
     pub prevent_default: Rc<Cell<bool>>,
+    prevent_context_menu: Option<bool>,
     pub is_intersecting: Option<bool>,
     on_touch_start: Option<EventListenerHandle<dyn FnMut(Event)>>,
     on_focus: Option<EventListenerHandle<dyn FnMut(FocusEvent)>>,
@@ -163,6 +164,7 @@ impl Canvas {
             id,
             has_focus: Rc::new(Cell::new(false)),
             prevent_default: Rc::new(Cell::new(attr.platform_specific.prevent_default)),
+            prevent_context_menu: attr.platform_specific.prevent_context_menu,
             is_intersecting: None,
             on_touch_start: None,
             on_blur: None,
@@ -466,9 +468,10 @@ impl Canvas {
 
     pub(crate) fn on_context_menu(&mut self) {
         let prevent_default = Rc::clone(&self.prevent_default);
+        let prevent_context_menu = self.prevent_context_menu;
         self.on_context_menu =
             Some(self.common.add_event("contextmenu", move |event: PointerEvent| {
-                if prevent_default.get() {
+                if prevent_context_menu.unwrap_or_else(|| prevent_default.get()) {
                     event.prevent_default();
                 }
             }));

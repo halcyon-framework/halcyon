@@ -9431,6 +9431,8 @@ mod app_signal_tests;
 pub struct AppConfig {
     #[cfg(target_arch = "wasm32")]
     web_navigation: Option<WebNavigation>,
+    #[cfg(target_arch = "wasm32")]
+    web_context_menu_enabled: bool,
     /// Application input policy; keyboard navigation and Capture remain the default.
     pub ui_interaction_policy: crate::core::event::UiInteractionPolicy,
     developer_shortcuts_enabled: bool,
@@ -9463,6 +9465,8 @@ impl Default for AppConfig {
             title: "Halcyon App".to_string(),
             #[cfg(target_arch = "wasm32")]
             web_navigation: None,
+            #[cfg(target_arch = "wasm32")]
+            web_context_menu_enabled: false,
             ui_interaction_policy: crate::core::event::UiInteractionPolicy::default(),
             developer_shortcuts_enabled: true,
             ui_scale: UiScale::ONE,
@@ -9488,6 +9492,13 @@ impl AppConfig {
     #[cfg(target_arch = "wasm32")]
     pub fn with_web_navigation(mut self, navigation: WebNavigation) -> Self {
         self.web_navigation = Some(navigation);
+        self
+    }
+
+    /// Permit the browser's context menu on the app canvas. Disabled by default.
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_web_context_menu_enabled(mut self, enabled: bool) -> Self {
+        self.web_context_menu_enabled = enabled;
         self
     }
 

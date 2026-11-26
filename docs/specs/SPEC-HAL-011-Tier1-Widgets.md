@@ -608,3 +608,37 @@ FlexParams {
 ```
 
 FlowGrid requires `min_item_width > 0` for proper wrap behavior (enforced by debug assertion).
+
+## 20. Opt-in Button hand cursor (2026-11-26)
+
+**Status: Accepted / Binding scoped addition.** JC approved the missing
+link cursor affordance observed by an external Website visitor. This
+does not adopt the remaining proposed HAL-098 system.
+
+Add `Button::with_pointer_cursor(self, enabled: bool) -> Self`.
+Default false for every constructor: existing Buttons retain their
+ordinary cursor behavior. True selects the existing
+`CursorIcon::Pointer` for enabled Button mouse interaction.
+
+Request the icon through the existing `EventContext::request_cursor`
+during the ordinary target-phase mouse Move, Down, Up, DoubleClick and
+TripleClick dispatch for a position inside the Button's admitted bounds.
+The actual routed Button, including its ordinary caption/child
+composition, owns this feedback. A captured mouse outside those bounds
+does not request the hand. Touch, pen, keyboard, disabled, obscured or
+unavailable controls cannot acquire this affordance. The ordinary
+router applies the request and restores the default or another
+admitted icon when the pointer no longer qualifies. Preserve existing
+relative/hidden cursor authority and capture, focus, hover, scroll,
+activation and appearance contracts. No sticky cursor lease, DOM hit
+testing, extra event route, direct platform call, synthetic pointer
+event, animation, or frame scheduling is admitted. Cursor requests
+remain ephemeral and visual only.
+
+Qualification: routed mouse entry and repeated movement over both
+text and child-content Buttons; press/release and captured movement
+out/in; transfer to background or another cursor-owning widget;
+disabled and default-unconfigured Button; no mouse cursor claim from
+touch or keyboard. Verify the existing browser cursor output maps
+Pointer to the hand without altering the Button's selected material.
+Native and WASM share the same Button owner.

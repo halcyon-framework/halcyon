@@ -454,6 +454,7 @@ pub struct PlatformSpecificWindowAttributes {
     pub(crate) canvas: Option<Arc<MainThreadSafe<backend::RawCanvasType>>>,
     pub(crate) input_overlay: Option<Arc<MainThreadSafe<HtmlElement>>>,
     pub(crate) prevent_default: bool,
+    pub(crate) prevent_context_menu: Option<bool>,
     pub(crate) focusable: bool,
     pub(crate) append: bool,
 }
@@ -481,6 +482,13 @@ impl PlatformSpecificWindowAttributes {
 
 impl Default for PlatformSpecificWindowAttributes {
     fn default() -> Self {
-        Self { canvas: None, input_overlay: None, prevent_default: true, focusable: true, append: false }
+        Self {
+            canvas: None,
+            input_overlay: None,
+            prevent_default: true,
+            prevent_context_menu: None,
+            focusable: true,
+            append: false,
+        }
     }
 }

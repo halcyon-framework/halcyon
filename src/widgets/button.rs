@@ -14,7 +14,7 @@ use crate::core::appearance::{
     FocusCueModality, PreparedButtonStyle, ProductSelectionFact, ResolvedButtonAppearance,
     UnresolvedAppearance, UnresolvedButtonStyle,
 };
-use crate::core::event::{Event, EventPhase, PointerButton, PointerEventKind};
+use crate::core::event::{CursorIcon, Event, EventPhase, PointerButton, PointerEventKind, PointerType};
 use crate::core::layout::{
     Borders, Constraints, LayoutResult, Margins, Padding, compute_box_model, shrink_constraints,
 };
@@ -355,6 +355,7 @@ enum ButtonMaterialSelection {
 pub struct Button {
     id: WidgetInternalId,
     enabled: bool,
+    pointer_cursor: bool,
     keyboard_activation_retired: bool,
     /// Child Label node (canonical pattern). `None` when constructed
     /// standalone via `Button::with_text` for SPEC-HAL-319 composition.
@@ -506,6 +507,7 @@ impl Button {
         Self {
             id: WidgetInternalId::new(),
             enabled: true,
+            pointer_cursor: false,
             keyboard_activation_retired: false,
             child: Some(child),
             text: None,
@@ -545,6 +547,7 @@ impl Button {
         Self {
             id: WidgetInternalId::new(),
             enabled: true,
+            pointer_cursor: false,
             keyboard_activation_retired: false,
             child: None,
             text: Some(text.into()),
@@ -583,8 +586,18 @@ impl Button {
         self
     }
 
+    /// Request a hand cursor for in-bounds mouse input. Disabled by default.
+    pub fn with_pointer_cursor(mut self, enabled: bool) -> Self {
+        self.pointer_cursor = enabled;
+        self
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    fn contains_local_point(&self, (x, y): (f32, f32)) -> bool {
+        x >= 0.0 && x <= self.layout_bounds.width && y >= 0.0 && y <= self.layout_bounds.height
     }
 
     pub(crate) fn apply_availability_policy(&mut self, enabled: bool) {
@@ -1428,6 +1441,22 @@ impl Widget for Button {
             return false;
         }
 
+        if self.pointer_cursor
+            && let Event::Pointer(pointer) = event
+            && pointer.pointer_type == PointerType::Mouse
+            && matches!(
+                pointer.kind,
+                PointerEventKind::Move
+                    | PointerEventKind::Down
+                    | PointerEventKind::Up
+                    | PointerEventKind::DoubleClick
+                    | PointerEventKind::TripleClick
+            )
+            && self.contains_local_point(pointer.local_pos)
+        {
+            cx.request_cursor(CursorIcon::Pointer);
+        }
+
         match event {
             Event::Pointer(pe) => match pe.kind {
                 // Treat DoubleClick/TripleClick same as Down for buttons.
@@ -1470,10 +1499,7 @@ impl Widget for Button {
                     // During pointer capture: update visual state based on position (for feedback)
                     if self.pointer_activation.eligible {
                         let (local_x, local_y) = pe.local_pos;
-                        let inside = local_x >= 0.0
-                            && local_x <= self.layout_bounds.width
-                            && local_y >= 0.0
-                            && local_y <= self.layout_bounds.height;
+                        let inside = self.contains_local_point(pe.local_pos);
 
                         tracing::debug!(
                             "Button {:?}: Move during press, local=({:.1}, {:.1}), inside={}",
@@ -1518,11 +1544,7 @@ impl Widget for Button {
                     // Router auto-releases capture after Up, so we don't call release_pointer()
 
                     // Check if pointer is inside bounds at release time
-                    let (local_x, local_y) = pe.local_pos;
-                    let inside = local_x >= 0.0
-                        && local_x <= self.layout_bounds.width
-                        && local_y >= 0.0
-                        && local_y <= self.layout_bounds.height;
+                    let inside = self.contains_local_point(pe.local_pos);
 
                     let activation_eligible = self.pointer_activation.take();
 
@@ -1789,6 +1811,9 @@ impl Widget for Button {
         "Button"
     }
 }
+
+#[cfg(test)]
+mod pointer_cursor_tests;
 
 #[cfg(test)]
 mod sdf_request_tests {

@@ -125,6 +125,10 @@ pub trait WindowAttributesExtWebSys {
     /// Enabled by default.
     fn with_prevent_default(self, prevent_default: bool) -> Self;
 
+    /// Sets whether the canvas permits the browser's default context menu.
+    /// The context menu follows [`Self::with_prevent_default`] when unset.
+    fn with_context_menu_enabled(self, enabled: bool) -> Self;
+
     /// Whether the canvas should be focusable using the tab key. This is necessary to capture
     /// canvas keyboard events.
     ///
@@ -150,6 +154,11 @@ impl WindowAttributesExtWebSys for WindowAttributes {
 
     fn with_prevent_default(mut self, prevent_default: bool) -> Self {
         self.platform_specific.prevent_default = prevent_default;
+        self
+    }
+
+    fn with_context_menu_enabled(mut self, enabled: bool) -> Self {
+        self.platform_specific.prevent_context_menu = Some(!enabled);
         self
     }
 

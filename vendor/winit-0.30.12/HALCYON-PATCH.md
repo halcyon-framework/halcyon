@@ -1,4 +1,4 @@
-# halcyon-winit 0.30.12
+# halcyon-winit 0.30.13
 
 `halcyon-winit` is a temporary Halcyon-specific Web derivative of upstream
 [winit](https://github.com/rust-windowing/winit). Its Rust library is named
@@ -37,6 +37,10 @@ shortcut transport, and a caller-owned sibling input overlay.
   and keeps ordinary mouse focus and pointer capture on the canvas. Touch
   over the overlay retains the browser's activation behavior for the host
   picker. Halcyon owns selection and commit.
+
+Version 0.30.13 adds `WindowAttributesExtWebSys::with_context_menu_enabled`.
+The existing canvas listener uses this override for `contextmenu` and follows
+the window's `prevent_default` value when the override is unset.
 
 Applications using Halcyon's windowing types import them from
 `halcyon::winit`. Upstream winit types have a separate identity on WebAssembly.
