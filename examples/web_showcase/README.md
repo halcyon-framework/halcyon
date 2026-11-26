@@ -66,6 +66,12 @@ Ctrl+C. Rebuild the WASM and rerun bindgen before reloading after Rust changes.
 
 ## Platform boundaries
 
+The status bar's **screen updates/s** measures browser-controlled update cadence,
+not GPU FPS. Hover it for optional browser guidance; no active cap is detected.
+Safari may limit page rendering updates to near 60fps. For higher refresh rates,
+open Safari Settings > Advanced, enable Show features for web developers, then in
+Feature Flags disable Prefer Page Rendering Updates near 60fps and restart Safari.
+
 - Native macOS uses SystemUI/CoreText; WASM uses embedded Inter and Glyphon/Swash.
   The shared shaping engine does not make these fonts or rasterizers identical.
 - Standalone and Dedicated expose 16 browser tabs with the original IDs and order.

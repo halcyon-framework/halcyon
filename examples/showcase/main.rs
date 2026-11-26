@@ -1222,14 +1222,29 @@ impl ShowcaseScreen {
             .tree
             .add_child(status_row, Box::new(FlexSpacer::new()), None, 0);
         cx.tree.set_flex(status_spacer, FlexParams::flexible(1.0));
-        let update_rate_id =
-            cx.tree
-                .add_child(status_row, Box::new(Label::new(&update_rate)), None, 1);
+        let (update_rate_id, update_rate_slot) = {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let host = cx.tree.add_child(
+                    status_row,
+                    Box::new(tip::Tip::new("Safari may prefer 60fps. See README.")),
+                    None,
+                    1,
+                );
+                let label = cx.tree.add_child(host, Box::new(Label::new(&update_rate)), None, 0);
+                (label, host)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let label = cx.tree.add_child(status_row, Box::new(Label::new(&update_rate)), None, 1);
+                (label, label)
+            }
+        };
         self.update_rate_label_id = Some(update_rate_id);
         // Fixed-width status slots: values update in place, so the cluster never
         // reflows/slides and never clips. Widths are generous for worst-case text
         // at the 13px UI font.
-        cx.tree.set_flex(update_rate_id, FlexParams::fixed(136.0));
+        cx.tree.set_flex(update_rate_slot, FlexParams::fixed(136.0));
         cx.tree
             .add_child(status_row, Box::new(Divider::vertical()), None, 2);
         let uptime_id = cx
