@@ -280,7 +280,7 @@ validation remains part of further development.
 [Getting started](getting-started.md) records its original tested Apple Silicon
 macOS and browser WebAssembly route, the separately qualified source-based
 0.270.2-beta build route including Windows cross-target compilation, and the
-subsequent scoped 0.270.3-beta native and Brave observations. A cross-target
+subsequent scoped 0.270.3-beta native and browser observations. A cross-target
 check is not native Windows runtime acceptance.
 
 Compilation, automated tests, rendered output, and physical device input

@@ -375,10 +375,10 @@ The following original observations retain the guide's historical
 - **Native runtime:** On Apple Silicon macOS, the starter showed its first
   window and a successor frame. One AppKit-routed Button click displayed
   `Test tap count: 1`.
-- **Browser runtime:** Headless Brave at DPR 1 displayed the initial Web
-  Showcase and Touch Input screens. The starter displayed `hello λ` after a
-  trusted browser text event, **Option 2** after mouse selection in the
-  Halcyon popup, and `Test tap count: 1` after one click.
+- **Browser runtime:** A headless Chromium-based browser at DPR 1 displayed
+  the initial Web Showcase and Touch Input screens. The starter displayed
+  `hello λ` after a trusted browser text event, **Option 2** after mouse
+  selection in the Halcyon popup, and `Test tap count: 1` after one click.
 
 These observations cover the tested desktop setup. Physical mobile input,
 the system picker, and browser 3D have separate verification paths.
@@ -415,7 +415,7 @@ successfully. Source-tree native examples and Web examples also built.
 
 The Apple Silicon macOS run produced its first window and a successor
 frame, and an AppKit-routed Button event incremented the visible counter.
-Native text input was not exercised in that run. The Brave run produced
+Native text input was not exercised in that run. The browser run produced
 its first visible frame, accepted trusted input of `hello λ`, selected
 **Option 2**, and incremented the Button counter to 1. No page or GPU errors
 were observed in that run. These results do not establish physical device

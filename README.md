@@ -6,9 +6,9 @@ macOS and WebAssembly.
 
 This is an experimental beta. Public APIs and integration requirements can
 change between releases. The getting-started route was tested with Rust and
-Cargo 1.100.0 on Apple Silicon macOS and with the WASM build in local Brave
-at DPR 1. Use native build tools, `cmake` on `PATH`, and Python 3.9 or later
-to serve the Web examples.
+Cargo 1.100.0 on Apple Silicon macOS and in a Chromium-based browser at DPR 1
+for WebAssembly. Use native build tools, `cmake` on `PATH`, and Python 3.9 or
+later to serve the Web examples.
 
 From the provided Halcyon source root, run Showcase:
 
