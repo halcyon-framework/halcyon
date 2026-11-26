@@ -1141,7 +1141,7 @@ impl TextField {
                         match cx.try_start_animation(Animation::new(
                             from,
                             destination.x,
-                            0.065,
+                            0.040,
                             Easing::EaseOut,
                         )) {
                             Ok(Some(handle)) => self.smooth_caret.handle = Some(handle),
@@ -1353,7 +1353,7 @@ impl TextField {
                         cx.cancel_animation(handle);
                     }
                     if let Ok(Some(handle)) =
-                        cx.try_start_animation(Animation::new(from, target, 0.055, Easing::EaseOut))
+                        cx.try_start_animation(Animation::new(from, target, 0.040, Easing::EaseOut))
                     {
                         self.smooth_caret.handle = Some(handle);
                         boundary.pending = false;
@@ -2352,7 +2352,7 @@ impl TextField {
                     let duration = if boundary.range.is_some() {
                         Self::range_duration(0.0, general.travel * (1.0 - progress))
                     } else {
-                        Some(0.055)
+                        Some(0.040)
                     };
                     if let Some(duration) = duration {
                         if let Ok(Some(handle)) = cx.try_start_animation(Animation::new(
@@ -2461,7 +2461,7 @@ impl TextField {
                     let duration = if boundary.range.is_some() {
                         Self::range_duration(from, target)
                     } else {
-                        Some(0.055)
+                        Some(0.040)
                     };
                     if let Some(duration) = duration {
                         if let Ok(Some(handle)) = cx.try_start_animation(Animation::new(
@@ -7462,7 +7462,7 @@ mod smooth_caret_tests {
                     );
                 }
                 let mut samples = Vec::new();
-                for dt in [0.0, 0.004, 0.012, 0.024, 0.040] {
+                for dt in [0.0, 0.003555555, 0.010666666, 0.021333332, 0.035555553] {
                     let image = frame(&mut f, start + dt);
                     assert_eq!(f.field().text(), expected);
                     if append != "r" {
@@ -7491,7 +7491,7 @@ mod smooth_caret_tests {
                                 + (old.width + (new.width - old.width) * general.progress);
                             assert_eq!(draw.clip.x, prior.clip.x);
                             assert_eq!(draw.clip.right(), snap_to_physical(edge, scale));
-                            if dt == 0.024 {
+                            if dt == 0.021333332 {
                                 println!(
                                     "{original}→{expected} {scale}x at {dt}s source {:?} origin {:?} clip {:?}",
                                     draw.text, draw.origin, draw.clip,
@@ -7501,7 +7501,7 @@ mod smooth_caret_tests {
                     }
                     samples.push((dt, f.field().smooth_caret.handle.is_some(), image));
                 }
-                let settled = frame(&mut f, (start + f64::from(0.055_f32)).next_up());
+                let settled = frame(&mut f, (start + f64::from(0.040_f32)).next_up());
                 assert_eq!(f.field().text(), expected);
                 assert!(f.field().smooth_caret.handle.is_none());
                 if append != "r" {
@@ -7606,10 +7606,10 @@ mod smooth_caret_tests {
                 &peer,
                 &f.harness.local_fragment(f.peer).unwrap()
             ));
-            f.tick((0.010 + f64::from(0.055_f32)).next_up());
+            f.tick((0.010 + f64::from(0.040_f32)).next_up());
             assert!(
                 f.field().smooth_caret.handle.is_none(),
-                "55ms terminal sample"
+                "40ms terminal sample"
             );
             assert!(f.field().smooth_caret.boundary.is_none());
             plain.tick(0.070);
@@ -7628,7 +7628,7 @@ mod smooth_caret_tests {
                 "Backspace {expected:?}: {:?}",
                 f.field().smooth_caret.projection_refusal
             );
-            f.tick((0.080 + f64::from(0.055_f32)).next_up());
+            f.tick((0.080 + f64::from(0.040_f32)).next_up());
             assert!(f.field().smooth_caret.handle.is_none());
             assert!(f.field().smooth_caret.boundary.is_none());
         }
@@ -7934,12 +7934,12 @@ mod smooth_caret_tests {
                 );
                 f.tick(0.0375);
                 assert!(f.field().smooth_caret.boundary.is_some());
-                f.tick((0.010 + f64::from(0.055_f32)).next_up());
+                f.tick((0.010 + f64::from(0.040_f32)).next_up());
                 assert!(f.field().smooth_caret.boundary.is_none());
                 f.key(KeyCode::Backspace, Modifiers::default());
                 f.tick(0.080);
                 assert!(f.field().smooth_caret.handle.is_some());
-                f.tick((0.080 + f64::from(0.055_f32)).next_up());
+                f.tick((0.080 + f64::from(0.040_f32)).next_up());
                 assert!(f.field().smooth_caret.handle.is_none());
             }
         }
@@ -8513,7 +8513,7 @@ mod smooth_caret_tests {
         f.insert("d");
         assert_eq!(f.field().text(), "abcd", "logical insertion is immediate");
         f.tick(0.010);
-        let first = f.field().smooth_caret.handle.expect("55 ms Timeline leg");
+        let first = f.field().smooth_caret.handle.expect("40 ms Timeline leg");
         assert_eq!(f.field().smooth_caret.projection.unwrap().x, origin);
         let (source, edge, caret) = presentation(&f);
         assert_eq!(source, "abcd");
@@ -8525,8 +8525,8 @@ mod smooth_caret_tests {
         let (_, edge, caret) = presentation(&f);
         assert_eq!(edge, caret);
         // Convert the stored f32 duration; one f64 ULP avoids subtracting
-        // the start back to an elapsed value just below the 55 ms deadline.
-        let deadline = (0.010 + f64::from(0.055_f32)).next_up();
+        // the start back to an elapsed value just below the 40 ms deadline.
+        let deadline = (0.010 + f64::from(0.040_f32)).next_up();
         f.tick(deadline - 0.001);
         assert_eq!(f.field().smooth_caret.handle, Some(first));
         assert!(f.field().smooth_caret.boundary.is_some());
@@ -8565,7 +8565,7 @@ mod smooth_caret_tests {
         let (source, edge, caret) = presentation(&f);
         assert_eq!(source, "abcd");
         assert_eq!(edge, caret);
-        let deadline = (0.080 + f64::from(0.055_f32)).next_up();
+        let deadline = (0.080 + f64::from(0.040_f32)).next_up();
         let retargeted = f.field().smooth_caret.handle;
         assert!(retargeted.is_some());
         f.tick(deadline - 0.001);
@@ -8587,7 +8587,7 @@ mod smooth_caret_tests {
             f.field().smooth_caret.boundary.is_some(),
             "HAL101 §13: supported Unicode is not an ambiguous prototype source"
         );
-        f.tick((0.140 + f64::from(0.055_f32)).next_up());
+        f.tick((0.140 + f64::from(0.040_f32)).next_up());
         assert!(f.field().smooth_caret.boundary.is_none());
         let mut disabled = Fixture::new(false);
         disabled.insert("d");
@@ -8598,7 +8598,7 @@ mod smooth_caret_tests {
 
     #[test]
     fn text_field_default_motion_smoke() {
-        caret_boundary_range_smoke(); // includes the P6 55 ms deadline proof
+        caret_boundary_range_smoke(); // includes the P6 40 ms deadline proof
         smooth_caret_selection_ime_configuration_and_capture_boundaries_cancel();
         assert!(TextField::default().smooth_caret_prototype_enabled());
 
@@ -9641,7 +9641,7 @@ mod smooth_caret_tests {
         let first = f.field().smooth_caret.handle.expect("real Timeline leg");
         let target = f.canonical_x();
         assert_eq!(f.painted_x(), from, "same-frame exact from");
-        f.tick(0.0425);
+        f.tick(0.030);
         let middle = from + (target - from) * 0.75;
         assert!((f.painted_x() - middle).abs() < 0.001);
         assert!(Arc::ptr_eq(
@@ -9652,7 +9652,7 @@ mod smooth_caret_tests {
         f.key(KeyCode::Left, Modifiers::default());
         assert_eq!(f.field().text(), "abc");
         assert_eq!(f.field().state.cursor.pos, 0);
-        f.tick(0.0425);
+        f.tick(0.030);
         let second = f.field().smooth_caret.handle.unwrap();
         assert_ne!(first, second);
         assert!(
@@ -9660,11 +9660,11 @@ mod smooth_caret_tests {
             "retarget from current sample"
         );
         let peer = f.harness.local_fragment(f.peer).unwrap();
-        f.tick(0.1065);
+        f.tick(0.069);
         assert!(f.field().smooth_caret.handle.is_some());
         assert_ne!(f.painted_x(), f.canonical_x());
         // Timeline's public duration is f32, promoted to its f64 frame clock.
-        f.tick(0.0425 + f64::from(0.065_f32));
+        f.tick((0.030 + f64::from(0.040_f32)).next_up());
         assert_eq!(f.painted_x(), f.canonical_x());
         assert!(f.field().smooth_caret.handle.is_none());
         assert!(f.field().smooth_caret.pending.is_none());
@@ -9713,10 +9713,10 @@ mod smooth_caret_tests {
             f.tick(0.090);
             assert_eq!(f.field().smooth_caret.handle, Some(handle));
             assert_eq!(f.field().text(), "abc");
-            f.tick(0.144);
+            f.tick(0.119);
             assert_eq!(f.field().smooth_caret.handle, Some(handle));
             assert_ne!(f.painted_x(), f.canonical_x());
-            f.tick(0.080 + f64::from(0.065_f32));
+            f.tick((0.080 + f64::from(0.040_f32)).next_up());
             assert_eq!(f.painted_x(), f.canonical_x());
             assert!(f.field().smooth_caret.handle.is_none());
         }
@@ -9940,7 +9940,7 @@ mod smooth_caret_tests {
             assert_eq!(edge, snap_to_physical(origin + projection.x, scale));
             previous = projection.x;
         }
-        let deadline = (0.050 + f64::from(0.055_f32)).next_up();
+        let deadline = (0.050 + f64::from(0.040_f32)).next_up();
         f.tick(deadline - 0.001);
         assert_eq!(f.field().smooth_caret.handle, Some(reveal));
         f.tick(deadline);
@@ -9958,7 +9958,7 @@ mod smooth_caret_tests {
         assert_ne!(old, next);
         assert_ne!(reveal, next);
         assert_eq!(f.painted_x(), from);
-        f.tick((0.120 + f64::from(0.065_f32)).next_up());
+        f.tick((0.120 + f64::from(0.040_f32)).next_up());
         assert_eq!(f.painted_x(), f.canonical_x());
         assert!(f.field().smooth_caret.handle.is_none());
     }
@@ -10205,7 +10205,7 @@ mod smooth_caret_tests {
         assert_eq!(f.field().state.cursor.pos, 0);
         f.tick(0.070);
         assert!(f.field().smooth_caret.handle.is_some());
-        f.tick((0.070 + f64::from(0.055_f32)).next_up());
+        f.tick((0.070 + f64::from(0.040_f32)).next_up());
         assert_eq!(f.painted_x(), 0.0);
         assert!(f.field().smooth_caret.handle.is_none());
     }
@@ -10384,7 +10384,7 @@ mod smooth_caret_tests {
         let x = f.field().smooth_caret.projection.unwrap().x;
         assert!(x > origin && x < f.canonical_x());
         check(&f, true);
-        let deadline = (0.010 + f64::from(0.055_f32)).next_up();
+        let deadline = (0.010 + f64::from(0.040_f32)).next_up();
         let reveal = f.field().smooth_caret.handle;
         assert!(reveal.is_some());
         f.tick(deadline - 0.001);
@@ -10411,7 +10411,7 @@ mod smooth_caret_tests {
         assert_eq!((boundary.old_count, boundary.new_count), (4, 1));
         assert_ne!(f.field().smooth_caret.handle.unwrap(), first);
         check(&f, true);
-        let deadline = (0.110 + f64::from(0.055_f32)).next_up();
+        let deadline = (0.110 + f64::from(0.040_f32)).next_up();
         let conceal = f.field().smooth_caret.handle;
         f.tick(deadline - 0.001);
         assert_eq!(f.field().smooth_caret.handle, conceal);

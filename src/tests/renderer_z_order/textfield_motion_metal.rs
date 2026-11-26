@@ -137,7 +137,7 @@ fn u1_textfield_unicode_motion_real_metal_1x_2x() {
             caret_rects(&h.local_fragment(owner).unwrap(), scale, &mut edge_regions);
             for (stage, time) in [
                 ("start", 0.010),
-                ("mid", 0.0375),
+                ("mid", 0.030),
                 ("after", 0.080),
                 ("quiet", 0.090),
             ] {
@@ -504,8 +504,8 @@ fn u1_textfield_rtl_emoji_motion_real_metal_1x_2x() {
                     let mut samples = Vec::new();
                     for (stage, now) in [
                         ("start", start),
-                        ("mid", start + f64::from(0.055_f32) * 0.5),
-                        ("final", (start + f64::from(0.055_f32)).next_up()),
+                        ("mid", start + f64::from(0.040_f32) * 0.5),
+                        ("final", (start + f64::from(0.040_f32)).next_up()),
                         ("quiet", start + 0.060),
                     ] {
                         let f = frame(
@@ -1104,7 +1104,7 @@ fn u1_textfield_long_visible_edit_real_metal_1x_2x() {
                     let duration: f32 = if case == "range" {
                         (80.0 + 1.25 * full_width).clamp(100.0, 220.0) / 1000.0
                     } else {
-                        0.055
+                        0.040
                     };
                     router.set_frame_time_ms(if operation == "append" {
                         2

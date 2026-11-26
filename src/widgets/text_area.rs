@@ -1752,7 +1752,7 @@ impl TextArea {
                 if d.x != previous.destination.x {
                     if let Some(handle) = self.smooth_caret.handle.take() { cx.cancel_animation(handle); }
                     if from != d.x {
-                        match cx.try_start_animation(Animation::new(from, d.x, 0.065, Easing::EaseOut)) {
+                        match cx.try_start_animation(Animation::new(from, d.x, 0.040, Easing::EaseOut)) {
                             Ok(Some(handle)) => self.smooth_caret.handle = Some(handle),
                             _ => x = Some(d.x),
                         }
@@ -4895,10 +4895,10 @@ mod motion_tests {
         f.tick(0.010);
         assert!(f.area().smooth_caret.handle.is_some());
         assert_eq!(f.painted_x(), start, "same-frame start is the current static caret");
-        f.tick(0.0425);
+        f.tick(0.030);
         let middle = f.painted_x();
         assert!(middle > start && middle < destination);
-        f.tick(0.07500001);
+        f.tick(0.05000001);
         assert_eq!(f.painted_x(), destination);
         assert!(f.area().smooth_caret.handle.is_none());
         assert!(Arc::ptr_eq(&peer, &f.harness.local_fragment(f.peer).unwrap()));

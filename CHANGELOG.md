@@ -6,6 +6,9 @@ All notable changes to the Halcyon UI framework.
 
 - **GPU startup refusal** — Add `RendererInitError` and fallible renderer and window-surface constructors. `App::run` reports a refusal and ends startup before Screen entry. `App::run_with_gpu_init_error_handler` delivers the original typed failure to the caller.
 - **Web Showcase startup errors** — Show a short message when the browser lacks WebGPU or initialization is refused. Keep the underlying diagnosis in the console, and retire the failed App's bootstrap and startup nodes.
+- **Button cursor affordance** — Add opt-in `Button::with_pointer_cursor(true)` for ordinary in-bounds mouse interaction. Existing Buttons retain their default cursor behavior.
+- **Browser context menus** — Add WASM-only `AppConfig::with_web_context_menu_enabled(true)` to allow the browser context menu without changing other default-event policies. The local WASM helper is `halcyon-winit` 0.30.13; native upstream Winit remains 0.30.12.
+- **Text editor motion** — Unify qualified TextField character reveal/conceal and discrete caret navigation, including TextArea same-line navigation, at 40 ms. Preserve EaseOut and adaptive range motion (100–220 ms). The maintainer accepted the visual trial; all 13 selected timing tests passed. The separate pre-existing rejected-input failure remains open.
 
 ## [0.271.3-beta] — 2026-11-25
 

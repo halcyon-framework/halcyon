@@ -1388,3 +1388,25 @@ Stage E establishes that:
 
 
 Adopted 2026-10-30 by the supervising technical reviewer under JC's explicit TextArea motion decision; JC retains final ownership and veto. The coordinated HAL-107 §10.2 and HAL-108 §13.3 additions and this section are Binding within this exact optional presentation scope. HAL-002/002A, TextField content-presentation scope, unrelated SPEC statuses, G1 and PM-016 are unchanged. Normative adoption does not establish compilation, executed conformance or native visual acceptance.
+
+### 17.1 Coordinated navigation timing trial (2026-11-26)
+
+For consistency with HAL-101 §14's 55 ms navigation candidate under
+JC's 45/55 ms trial, supersede only the 65 ms duration in
+INV-109-MOTION-TIME with 55 ms (0.055 Timeline seconds).
+Keep Once/EaseOut and all existing optional/default, navigation
+qualification, ownership, settlement and snap rules. This adds no
+TextArea content-edit animation. JC retains native visual acceptance.
+
+Under JC's subsequent unified timing instruction in HAL-101 §14.1,
+the current navigation trial duration is 45 ms (0.045 Timeline seconds),
+superseding the preceding 55 ms candidate. All other §17.1 rules remain.
+
+The subsequent unified 35 ms trial in HAL-101 §14.2 supersedes that
+45 ms candidate. The current navigation duration is 35 ms (0.035
+Timeline seconds). All other §17.1 conditions remain binding.
+
+HAL-101 §14.3 supersedes the 35 ms trial with 40 ms (0.040 Timeline
+seconds) for this same navigation scope. All other conditions remain.
+JC accepted the 40 ms value after visual review on 2026-11-26;
+the timing trial is closed.

@@ -1428,3 +1428,45 @@ The original host-local `!output.is_empty()` RED was a read-owner assumption inc
 **INV-101-U1-PARITY.** The same accepted text/edit/source must receive feature-equivalent native and browser presentation through the same TextField owner. WASM is not a lesser script class. Genuine source/backend/raster refusal remains observable under HAL360/361; compilation, a synthetic input attempt or a prepared frame is not physical pixel acceptance.
 
 Qualification must cover ordinary ASCII, newly entered Cyrillic, mixed Latin/Cyrillic, combining marks, multi-codepoint emoji, Arabic/Hebrew and mixed-direction actual cluster order, contextual join changes, deletion beyond 32 UTF-8 bytes and spans beyond half the viewport. Use the same mounted owner and real Capture/edit path, immediate document/Undo/Redo, exact Timeline samples and complete shape evidence; distinguish physical native/browser observation from mechanical proof. S7's pre-winit automated-input loss must not be “repaired” by replaying or inventing input. Clipboard and uncaptured-browser default policy are separate owners.
+
+## 14. Scoped 45/55 ms motion trial (2026-11-26)
+
+**Authority:** JC's explicit 45/55 ms trial instruction. Binding for the
+trial candidate; native visual acceptance remains with JC.
+
+Supersede only the operative duration values in §11.5, §13 and the
+related P2/P6 timing clauses: P6 character reveal/conceal, including its
+qualified mask-only and source-qualified paths, uses 45 ms (0.045
+Timeline seconds); P2 discrete navigation uses 55 ms (0.055 Timeline
+seconds). Both retain Once/EaseOut. The first admitted sample at or
+after the respective duration settles the exact destination under the
+existing lifecycle. Preserve P7/P8 adaptive range timing unchanged,
+including the existing 100–220 ms bounds. All other motion eligibility,
+ownership, immediate editing, shaping, retargeting and cancellation
+laws remain unchanged. Historical timing decisions remain as records.
+This is a visual timing trial, not an input latency claim.
+
+### 14.1 Unified timing trial (2026-11-26)
+
+JC supersedes the split 45/55 ms candidate with a single duration of
+45 ms (0.045 Timeline seconds) for both P6 character reveal/conceal
+and P2 discrete navigation. All other §14 conditions, including
+Once/EaseOut and unchanged P7/P8 adaptive timing, remain binding.
+The earlier split candidate is not the current implementation target.
+
+### 14.2 Unified 35 ms timing trial (2026-11-26)
+
+JC supersedes the 45 ms trial duration with 35 ms (0.035 Timeline
+seconds) for both P6 character reveal/conceal and P2 discrete
+navigation. All other §14 and §14.1 conditions remain binding.
+
+### 14.3 Unified 40 ms timing trial (2026-11-26)
+
+JC supersedes the 35 ms trial with 40 ms (0.040 Timeline seconds)
+for both P6 character reveal/conceal and P2 discrete navigation.
+All other §14 conditions remain binding.
+
+**Accepted 2026-11-26:** JC completed the visual review and selected
+40 ms as the final unified duration. The qualified timing trial is
+closed; 40 ms is the binding value. The separate pre-existing
+rejected-input failure is not resolved by this change.

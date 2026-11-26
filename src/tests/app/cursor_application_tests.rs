@@ -1465,7 +1465,7 @@
                 ]);
             }
             tick(&mut f, 0.100); // reconcile content/selection boundaries before navigation
-            tick(&mut f, 0.200); // an admitted reveal starts at Update, then settles after 60 ms
+            tick(&mut f, 0.200); // settle any admitted reveal
             let before = f.tree.composite_editor_snapshot(&id).unwrap();
             assert_eq!(before.text, "45", "{name}");
             assert_eq!(before.selection_anchor, before.selection_focus);
@@ -1477,15 +1477,15 @@
             assert_eq!(moved.selection_focus, 1, "logical cursor moves immediately: {name}");
             tick(&mut f, 0.200);
             let start = caret(&f.retained.local_fragment(id.child()).unwrap()).unwrap();
-            tick(&mut f, 0.2325);
+            tick(&mut f, 0.220);
             let middle = caret(&f.retained.local_fragment(id.child()).unwrap()).unwrap();
-            tick(&mut f, 0.266);
+            tick(&mut f, 0.241);
             let end = caret(&f.retained.local_fragment(id.child()).unwrap()).unwrap();
             assert_eq!(start, x0, "start frame preserves current qualified display: {name}");
             assert!(end < middle && middle < start,
                 "default navigation must reach Paint through the real child: {name}: {start}/{middle}/{end}");
             assert!((middle - (start + (end - start) * 0.75)).abs() <= 1.0,
-                "65 ms EaseOut midpoint: {name}");
+                "40 ms EaseOut midpoint: {name}");
             assert_eq!(f.domains.primary_state().focus_manager.focused(), Some(host));
             assert_ne!(host, id.child());
             assert_eq!(f.domains.primary_state().keyboard_mode,
