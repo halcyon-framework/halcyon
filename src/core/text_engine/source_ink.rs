@@ -4,7 +4,11 @@ use super::{ClusterGap, GlyphRun, TextBinding, TextEngine, verify_run_source_ran
 use crate::core::math::{Point, RectF};
 use crate::core::paint::{Color, PaintSink, ZIndex};
 use crate::platform::font_manager::{CatalogFace, FontFaceCatalog};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use crate::platform::native_font_backend_coretext::CoreTextOutlineReader;
 use sha2::{Digest, Sha256};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Weak};
@@ -451,6 +455,8 @@ struct QualifiedRun<'run> {
     run: &'run GlyphRun,
     binding: &'run TextBinding,
     face: Face<'run>,
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    outline_reader: OnceCell<Option<CoreTextOutlineReader>>,
     sources: Vec<Range<usize>>,
     cluster_starts: Vec<usize>,
     grapheme_starts: Vec<usize>,
@@ -508,6 +514,8 @@ impl<'run> QualifiedRun<'run> {
             run,
             binding,
             face,
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            outline_reader: OnceCell::new(),
             sources,
             cluster_starts,
             grapheme_starts,
@@ -537,23 +545,43 @@ impl<'run> QualifiedRun<'run> {
         {
             return Err(TextRangeEffectError::UnsupportedInk);
         }
-        let Some(bounds) = self.face.glyph_bounding_box(id) else {
+        let rect = if let Some(bounds) = self.face.glyph_bounding_box(id) {
+            let unit = self.run.font_size / f32::from(self.face.units_per_em());
+            RectF::new(
+                glyph.x + f32::from(bounds.x_min) * unit,
+                self.run.ascent + glyph.y - f32::from(bounds.y_max) * unit,
+                (f32::from(bounds.x_max) - f32::from(bounds.x_min)) * unit,
+                (f32::from(bounds.y_max) - f32::from(bounds.y_min)) * unit,
+            )
+        } else {
             let text = &self.run.text[self.sources[index].clone()];
-            return if self.face.glyph_index(' ') == Some(id)
-                || text.chars().all(char::is_whitespace)
+            if self.face.glyph_index(' ') == Some(id) || text.chars().all(char::is_whitespace) {
+                return Ok(None);
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            return Err(TextRangeEffectError::UnsupportedInk);
+
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
             {
-                Ok(None)
-            } else {
-                Err(TextRangeEffectError::UnsupportedInk)
-            };
+                let reader = self
+                    .outline_reader
+                    .get_or_init(|| {
+                        CoreTextOutlineReader::new(self.binding.face().data(), self.run.font_size)
+                    })
+                    .as_ref()
+                    .ok_or(TextRangeEffectError::UnsupportedInk)?;
+                let bounds = reader
+                    .glyph_bounds(id.0)
+                    .ok_or(TextRangeEffectError::UnsupportedInk)?;
+                let y_max = bounds.origin.y + bounds.size.height;
+                RectF::new(
+                    glyph.x + bounds.origin.x as f32,
+                    self.run.ascent + glyph.y - y_max as f32,
+                    bounds.size.width as f32,
+                    bounds.size.height as f32,
+                )
+            }
         };
-        let unit = self.run.font_size / f32::from(self.face.units_per_em());
-        let rect = RectF::new(
-            glyph.x + f32::from(bounds.x_min) * unit,
-            self.run.ascent + glyph.y - f32::from(bounds.y_max) * unit,
-            (f32::from(bounds.x_max) - f32::from(bounds.x_min)) * unit,
-            (f32::from(bounds.y_max) - f32::from(bounds.y_min)) * unit,
-        );
         if ![rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]
             .into_iter()
             .all(f32::is_finite)

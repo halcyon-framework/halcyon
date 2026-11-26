@@ -419,6 +419,182 @@ fn ink_bounds(pixels: &[u8], stride: usize, channel: usize) -> (usize, usize, us
     (left, top, right, bottom, count)
 }
 
+#[test]
+fn text_source_ink_system_ui_heading_metal() {
+    use crate::core::paint::{LocalAmbientGlowAppearance, LocalGlowLobe};
+    use crate::platform::system_font_provider::load_default_system_ui_font;
+
+    const HEADING: &str = "The Future, Rendered.";
+    let source = 12..20;
+    assert_eq!(&HEADING[source.clone()], "Rendered");
+    let system = load_default_system_ui_font().expect("native SystemUI face required");
+    let ivory = Color::from_hex(0xf6f0e5);
+    let gold = Color::from_hex(0xf1d1a0);
+    let origin = Point::new(28.0, 32.0);
+
+    for (width, dpr) in [(960, 1.0_f32), (420, 2.0)] {
+        let (mut renderer, compositor, surface) =
+            setup_with_size_and_scale(width, 160, dpr).expect("native Metal readback required");
+        let info = renderer.gpu_resources().adapter.get_info();
+        assert_eq!(info.backend, wgpu::Backend::Metal);
+
+        let engine = renderer.text_engine_mut();
+        engine.set_scale(dpr);
+        let max_width = width as f32 - 2.0 * origin.x;
+        let natural = engine.shape(HEADING, 68.0).width;
+        let font_size = (68.0 * max_width / natural.max(1.0)).clamp(1.0, 68.0);
+        assert_eq!(font_size == 68.0, dpr == 1.0);
+        let run = engine.shape_styled(HEADING, None, font_size).unwrap();
+        assert_eq!(run.text, HEADING);
+        assert_eq!(run.binding.as_ref().unwrap().face().data(), &system.data);
+        let qualified = engine.qualify_source_range(&run, source.clone()).unwrap();
+        assert_eq!(qualified.clusters().len(), 8);
+        let ink = qualified.ink_bounds().unwrap();
+        let pivot = qualified.pivot().unwrap();
+        let pivot = Point::new(origin.x + pivot.x, origin.y + pivot.y);
+        let glow_rect = ink.translate(origin.x, origin.y);
+
+        assert_eq!(run.clusters.len(), run.glyphs.len());
+        let selected: Vec<_> = run
+            .clusters
+            .iter()
+            .filter(|cluster| {
+                !HEADING[cluster.source.clone()]
+                    .chars()
+                    .all(char::is_whitespace)
+            })
+            .map(|cluster| source.contains(&cluster.source.start))
+            .collect();
+        assert_eq!(selected.iter().filter(|&&selected| selected).count(), 8);
+
+        let clip = (run.width > max_width + 0.5)
+            .then_some(RectF::new(origin.x, origin.y, max_width, run.height));
+        let render = |renderer: &mut WgpuRenderer,
+                      mut scene: SceneBuilder,
+                      effects: &[TextSourceRangeEffect]| {
+            if let Some(clip) = clip {
+                scene.begin_clip(clip, None);
+            }
+            renderer
+                .text_engine_mut()
+                .draw_with_source_range_effects(
+                    &run,
+                    origin,
+                    ivory,
+                    LAYER_CONTENT,
+                    effects,
+                    &mut scene,
+                )
+                .unwrap();
+            if clip.is_some() {
+                scene.end_clip();
+            }
+            let plan = compile(renderer, &compositor, surface, dpr, scene.build());
+            assert!(
+                plan.text_realization(surface)
+                    .unwrap()
+                    .outcome()
+                    .is_complete()
+            );
+            let rgba = read_compiled_surface(renderer, &plan, surface).unwrap();
+            (plan, rgba)
+        };
+
+        let (plain, baseline) = render(&mut renderer, SceneBuilder::new(), &[]);
+        let original = &plain.surface_data[&surface].text_quads;
+        assert_eq!(original.len(), selected.len());
+
+        for (p, scale) in [(0.5_f32, 1.0), (1.0, 1.0), (1.0, 0.90), (1.0, 1.15)] {
+            let t = p * p * (3.0 - 2.0 * p);
+            let foreground = Color::from_linear(
+                ivory.r + (gold.r - ivory.r) * t,
+                ivory.g + (gold.g - ivory.g) * t,
+                ivory.b + (gold.b - ivory.b) * t,
+                ivory.a,
+            );
+            let mut scene = SceneBuilder::new();
+            let glow_visible = p > 0.0 && p < 1.0;
+            let glow_bounds = if glow_visible {
+                let lobe = LocalGlowLobe::try_new(
+                    Point::new(0.10 + 0.80 * p, 0.5),
+                    Point::new(
+                        (ink.height * 1.15).clamp(12.0, 48.0),
+                        (ink.height * 0.78).clamp(10.0, 42.0),
+                    ),
+                    Point::new(1.0, 0.0),
+                    Color::from_hex(0xf2c884),
+                    0.32 * (std::f32::consts::PI * p).sin().powi(2),
+                )
+                .unwrap();
+                let appearance = LocalAmbientGlowAppearance::try_new(&[lobe]).unwrap();
+                scene
+                    .push_local_ambient_glow(glow_rect, appearance, 0, None)
+                    .unwrap();
+                appearance.bounds(glow_rect).unwrap()
+            } else {
+                None
+            };
+            let (plan, rgba) = render(
+                &mut renderer,
+                scene,
+                &[effect(source.clone(), foreground, scale)],
+            );
+            let painted = &plan.surface_data[&surface].text_quads;
+            assert_eq!(painted.len(), original.len());
+            let mut selected_rects = Vec::new();
+            for ((before, after), &selected) in original.iter().zip(painted).zip(&selected) {
+                assert_eq!(after.uv, before.uv);
+                assert_eq!(after.clip_rect, before.clip_rect);
+                assert_eq!(after.downsample_u, before.downsample_u);
+                if selected {
+                    assert_eq!(after.color, foreground.into());
+                    selected_rects.extend([before.pos, after.pos]);
+                } else {
+                    assert_eq!(after.color, before.color);
+                }
+                if selected && scale != 1.0 {
+                    assert!(
+                        (after.pos.x - (pivot.x + (before.pos.x - pivot.x) * scale)).abs() < 0.0001
+                    );
+                    assert!(
+                        (after.pos.y - (pivot.y + (before.pos.y - pivot.y) * scale)).abs() < 0.0001
+                    );
+                    assert!((after.pos.width - before.pos.width * scale).abs() < 0.0001);
+                    assert!((after.pos.height - before.pos.height * scale).abs() < 0.0001);
+                } else {
+                    assert_eq!(after.pos, before.pos);
+                }
+            }
+
+            let stride = (width as f32 * dpr) as usize;
+            assert_eq!(rgba.len(), baseline.len());
+            let (mut foreground_pixels, mut glow_pixels, mut unchanged_ink) = (0, 0, 0);
+            for (index, (before, after)) in
+                baseline.chunks_exact(4).zip(rgba.chunks_exact(4)).enumerate()
+            {
+                let point = Point::new(
+                    ((index % stride) as f32 + 0.5) / dpr,
+                    ((index / stride) as f32 + 0.5) / dpr,
+                );
+                if selected_rects.iter().any(|rect| rect.contains(point)) {
+                    foreground_pixels += usize::from(before != after);
+                } else if glow_bounds.is_some_and(|bounds| bounds.contains(point)) {
+                    glow_pixels += usize::from(before[..3] == [0; 3] && after[..3] != [0; 3]);
+                } else {
+                    assert_eq!(before, after, "unchanged text or background at {point:?}");
+                    unchanged_ink += usize::from(before[..3] != [0; 3]);
+                }
+            }
+            assert!(foreground_pixels > 100 && unchanged_ink > 100);
+            assert_eq!(glow_pixels > 100, glow_visible);
+            println!(
+                "SystemUI source ink on Metal {}: {dpr}x size={font_size:.3} p={p} scale={scale} changed foreground={foreground_pixels} glow-only={glow_pixels} unchanged ink={unchanged_ink}",
+                info.name,
+            );
+        }
+    }
+}
+
 fn wrapped_fallback_scenes(
     engine: &mut dyn TextEngine,
     style: &TextStyle,

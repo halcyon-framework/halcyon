@@ -6,6 +6,7 @@ All notable changes to the Halcyon UI framework.
 
 Local release candidate.
 
+- **SystemUI source-range effects on macOS** — Use tight CoreText outline bounds from the admitted font bytes when the parser cannot supply a selected monochrome glyph’s outline. This restores selected foreground and outline-positioned glow effects without changing the original text layout.
 - **Switch activation** — Commit a captured mouse press once on release inside the control. Pointer exit, outside release, capture loss, and disabling cancel the pending activation.
 - **Switch appearance** — Add checked per-instance `SwitchAppearance`, `SwitchAppearanceError`, and `Switch::with_switch_appearance`. Opt in to a rounded track and moving rounded thumb with configurable OFF and ON colors.
 

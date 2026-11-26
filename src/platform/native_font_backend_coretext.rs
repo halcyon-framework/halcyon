@@ -1,7 +1,7 @@
 //! SPEC-HAL-047 + SPEC-HAL-065: macOS CoreText implementation of `NativeFontBackend`.
 //!
-//! Per SPEC-HAL-065, this backend performs RASTERIZATION ONLY.
-//! All text shaping is handled by TextShaper (rustybuzz).
+//! TextShaper (rustybuzz) supplies the glyphs for the raster backend.
+//! Scoped HAL-048 outline qualification shares its byte-bound font construction.
 //!
 //! Uses core-text crate for safe CoreText bindings.
 
@@ -13,7 +13,8 @@ use core_foundation::base::TCFType;
 use core_graphics::context::CGContext;
 use core_graphics::data_provider::CGDataProvider;
 use core_graphics::font::{CGFont, CGGlyph};
-use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use core_graphics::geometry::{CGAffineTransform, CGPoint, CGRect, CGSize};
+use core_graphics::path::SysCGPathRef;
 use core_text::font::{CTFont, CTFontRef, kCTFontSystemFontType, new_from_CGFont, new_from_name};
 use core_text::font_descriptor::kCTFontOrientationHorizontal;
 use foreign_types::ForeignTypeRef;
@@ -22,7 +23,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-// FFI declarations for CoreText functions not properly exposed by core-text crate
+// CoreText and Core Graphics operations missing from the Rust bindings.
 unsafe extern "C" {
     fn CTFontDrawGlyphs(
         font: CTFontRef,
@@ -37,6 +38,35 @@ unsafe extern "C" {
         size: f64,
         language: *const std::ffi::c_void,
     ) -> CTFontRef;
+
+    fn CGPathIsEmpty(path: SysCGPathRef) -> bool;
+    fn CGPathGetPathBoundingBox(path: SysCGPathRef) -> CGRect;
+}
+
+fn font_from_data(data: &Arc<Vec<u8>>, font_size: f32) -> Option<CTFont> {
+    let data_provider = CGDataProvider::from_buffer(Arc::clone(data));
+    let cg_font = CGFont::from_data_provider(data_provider).ok()?;
+    Some(new_from_CGFont(&cg_font, f64::from(font_size)))
+}
+
+pub(crate) struct CoreTextOutlineReader(CTFont);
+
+impl CoreTextOutlineReader {
+    pub(crate) fn new(data: &Arc<Vec<u8>>, font_size: f32) -> Option<Self> {
+        font_from_data(data, font_size).map(Self)
+    }
+
+    pub(crate) fn glyph_bounds(&self, glyph: CGGlyph) -> Option<CGRect> {
+        let identity = CGAffineTransform::new(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        let path = self.0.create_path_for_glyph(glyph, &identity).ok()?;
+        // SAFETY: The owned path stays live through both Core Graphics queries.
+        unsafe {
+            if CGPathIsEmpty(path.as_ptr()) {
+                return None;
+            }
+            Some(CGPathGetPathBoundingBox(path.as_ptr()))
+        }
+    }
 }
 
 /// macOS CoreText implementation of `NativeFontBackend`.
@@ -102,12 +132,10 @@ impl CoreTextBackend {
 
     fn create_font(&self, font_size: f32) -> CTFont {
         // If we have embedded font data, use it
-        if let Some(data) = &self.font_data {
-            let data_provider = CGDataProvider::from_buffer(data.clone());
-            if let Ok(cg_font) = CGFont::from_data_provider(data_provider) {
-                // new_from_CGFont creates a CTFont at the given size
-                return new_from_CGFont(&cg_font, font_size as f64);
-            }
+        if let Some(data) = &self.font_data
+            && let Some(font) = font_from_data(data, font_size)
+        {
+            return font;
         }
 
         // Fallback to macOS system UI font
