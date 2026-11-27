@@ -1073,7 +1073,7 @@ impl PresenceTerminalFactory {
         let id = crate::utils::id::WidgetInternalId::new().raw();
         let source =
             PresenceFrontSource::new(context, &source, self.cpu.clone(), self.source.clone());
-        let retained: Arc<dyn Send + Sync> =
+        let retained: Arc<crate::renderer::gpu_custody::GpuCharge> =
             Arc::new((pin.read_lease(), self.terminal.clone(), source, charge));
         self.gpu
             .loading_presence_output(
@@ -1506,7 +1506,7 @@ impl PresenceGpuTarget {
         let source = source
             .as_ref()
             .map(|s| PresenceFrontSource::new(&self.context, s, w.cpu.clone(), w._source.clone()));
-        let retained: Arc<dyn Send + Sync> = Arc::new((
+        let retained: Arc<crate::renderer::gpu_custody::GpuCharge> = Arc::new((
             w.clone(),
             pin.map(|p| p.read_lease()),
             ready,

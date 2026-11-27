@@ -1,7 +1,7 @@
 //! Window-scoped History API projection. NavigationHost owns the route trail.
 
 use crate::core::app::UiWakeHandle;
-use js_sys::{Array, Function, Reflect};
+use js_sys::{Array, Function, Reflect, Uint8Array};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
@@ -112,12 +112,15 @@ impl BrowserHistory {
         // entry identity independently disqualifies a copied state token.
         let navigation = property(window.as_ref(), "navigation")?;
         current_entry(&navigation)?;
-        let mut random = [0; 16];
+        // WebCrypto requires a nonshared view even when WASM memory is shared.
+        let random_bytes = Uint8Array::new_with_length(16);
         window
             .crypto()
             .ok()?
-            .get_random_values_with_u8_array(&mut random)
+            .get_random_values_with_js_u8_array(&random_bytes)
             .ok()?;
+        let mut random = [0; 16];
+        random_bytes.copy_to(&mut random);
         let inbox = Rc::new(RefCell::new(PopInbox::default()));
         let weak = Rc::downgrade(&inbox);
         let source: EventTarget = window.clone().into();

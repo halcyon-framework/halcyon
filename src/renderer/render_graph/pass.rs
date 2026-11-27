@@ -104,6 +104,8 @@ impl std::fmt::Display for PassExecutionError {
 
 impl std::error::Error for PassExecutionError {}
 
+macro_rules! declare_pass_executor {
+    ($($bounds:tt)*) => {
 /// Trait for pass executors.
 ///
 /// # Invariant (INV-RG-015)
@@ -120,7 +122,7 @@ impl std::error::Error for PassExecutionError {}
 /// - Resource pools
 /// - SceneCache
 /// - Graph structure
-pub trait PassExecutor: Send + Sync {
+pub trait PassExecutor $($bounds)* {
     /// Encode GPU commands for this pass.
     ///
     /// # Arguments
@@ -128,3 +130,18 @@ pub trait PassExecutor: Send + Sync {
     /// * `ctx` - Constrained context with encoder and bound resources only.
     fn execute(&self, ctx: &mut PassContext) -> Result<(), PassExecutionError>;
 }
+    };
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    target_feature = "atomics"
+))]
+declare_pass_executor!();
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    target_feature = "atomics"
+)))]
+declare_pass_executor!(: Send + Sync);

@@ -13,13 +13,13 @@ pub(super) struct PresenceImageLayout {
 pub(crate) struct PresenceTerminalPipeline {
     pub(crate) pipeline: wgpu::RenderPipeline,
     _module: wgpu::ShaderModule,
-    _charge: Box<dyn Send + Sync>,
+    _charge: Box<crate::renderer::gpu_custody::GpuCharge>,
 }
 
 pub(crate) struct PresenceGeneration {
     users: AtomicUsize,
     pub(super) view: wgpu::TextureView,
-    _retained: Arc<dyn Send + Sync>,
+    _retained: Arc<crate::renderer::gpu_custody::GpuCharge>,
     wake: crate::renderer::image_binding::ImageAdmissionMailbox,
 }
 
@@ -50,7 +50,7 @@ impl PresenceFrameUse {
 
 struct PresenceWrite {
     command: wgpu::CommandBuffer,
-    retained: Arc<dyn Send + Sync>,
+    retained: Arc<crate::renderer::gpu_custody::GpuCharge>,
 }
 
 struct PresenceEntry {
@@ -95,7 +95,7 @@ impl PresenceOutput {
     pub(crate) fn queue(
         &self,
         command: wgpu::CommandBuffer,
-        retained: Arc<dyn Send + Sync>,
+        retained: Arc<crate::renderer::gpu_custody::GpuCharge>,
     ) -> Result<bool, &'static str> {
         if self.retired.load(Ordering::Acquire) || !self.gpu.private_hdr_owner_live() {
             return Err("HAL381 presentation owner retired");
@@ -152,7 +152,7 @@ impl GpuResources {
         &self,
         id: u64,
         view: wgpu::TextureView,
-        retained: Arc<dyn Send + Sync>,
+        retained: Arc<crate::renderer::gpu_custody::GpuCharge>,
         terminal: Option<Arc<PresenceTerminalPipeline>>,
     ) -> Result<PresenceOutput, &'static str> {
         if !self.private_hdr_owner_live() {
@@ -198,7 +198,7 @@ impl GpuResources {
 
     pub(crate) fn loading_presence_terminal_pipeline(
         &self,
-        charge: impl FnOnce() -> Box<dyn Send + Sync>,
+        charge: impl FnOnce() -> Box<crate::renderer::gpu_custody::GpuCharge>,
     ) -> Result<PresenceTerminalPipeline, &'static str> {
         let layout = self
             .pending_rgba8_registrations

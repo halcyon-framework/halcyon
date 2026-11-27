@@ -796,7 +796,7 @@ pub struct PendingImageUnregistration {
 // association/state changes below occur while pending_unregistrations is locked.
 pub(crate) struct HdrFinalCustody {
     texture_id: u64,
-    _charge: Box<dyn Send + Sync>,
+    _charge: Box<crate::renderer::gpu_custody::GpuCharge>,
 }
 
 struct HdrFinalRecord {
@@ -871,6 +871,12 @@ fn image_rgba8_byte_count(width: u32, height: u32) -> Option<usize> {
 #[derive(Clone)]
 pub struct GpuResources {
     pub device: std::sync::Arc<wgpu::Device>,
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    ))]
+    device_lifetime_owner: Arc<RendererDeviceLifetimeOwner>,
     pub queue: std::sync::Arc<wgpu::Queue>,
     pub format: wgpu::TextureFormat,
     pub(crate) adapter: wgpu::Adapter,
@@ -888,10 +894,30 @@ pub struct GpuResources {
     /// SPEC-HAL-266A preparation supplies renderer-owned per-surface metrics.
     pub scale_factor: f32,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) custom_render_preparation_wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub(crate) custom_render_preparation_wake: Option<Arc<crate::renderer::gpu_custody::GpuNotify>>,
 }
 
 impl GpuResources {
+    pub(crate) fn renderer_device_matches(&self) -> bool {
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        ))]
+        {
+            Arc::ptr_eq(&self.device, &self.device_lifetime_owner.device)
+                && self.device.as_webgpu().is_some()
+        }
+        #[cfg(not(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        )))]
+        {
+            true
+        }
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn wake_custom_render_preparation(&self) {
         if let Some(wake) = &self.custom_render_preparation_wake {
@@ -900,6 +926,9 @@ impl GpuResources {
     }
 
     pub(crate) fn private_hdr_owner_live(&self) -> bool {
+        if !self.renderer_device_matches() {
+            return false;
+        }
         let _removals = self
             .pending_unregistrations
             .lock()
@@ -915,7 +944,7 @@ impl GpuResources {
     pub(crate) fn reserve_hdr_final_custody(
         &self,
         texture_id: u64,
-        charge: Box<dyn Send + Sync>,
+        charge: Box<crate::renderer::gpu_custody::GpuCharge>,
         textures: [wgpu::Texture; 2],
     ) -> Result<Arc<HdrFinalCustody>, &'static str> {
         let _removals = self
@@ -1041,6 +1070,9 @@ impl GpuResources {
         rgba: Vec<u8>,
     ) -> Result<crate::renderer::image_binding::ImageBindingRequest, ImageRgba8RegistrationError>
     {
+        if !self.renderer_device_matches() {
+            return Err(ImageRgba8RegistrationError::RendererDestroyed);
+        }
         let mut pending = self
             .pending_rgba8_registrations
             .pending
@@ -1114,6 +1146,19 @@ impl GpuResources {
     }
 
     pub(crate) fn observe_device_lifetime(&self) -> DeviceLifetimeObservation {
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        ))]
+        {
+            self.device_lifetime_owner.observe()
+        }
+        #[cfg(not(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        )))]
         DeviceLifetimeObservation::for_device(&self.device)
     }
 }
@@ -1202,6 +1247,29 @@ pub(crate) struct DeviceLifetimeObservation {
     state: Arc<DeviceLifetimeState>,
 }
 
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    target_feature = "atomics"
+))]
+struct RendererDeviceLifetimeOwner {
+    device: Arc<wgpu::Device>,
+    observation: std::sync::OnceLock<DeviceLifetimeObservation>,
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    target_feature = "atomics"
+))]
+impl RendererDeviceLifetimeOwner {
+    fn observe(&self) -> DeviceLifetimeObservation {
+        self.observation
+            .get_or_init(|| DeviceLifetimeObservation::for_browser_device(&self.device))
+            .clone()
+    }
+}
+
 impl DeviceLifetimeObservation {
     pub(crate) fn observe_image_binding(
         &self,
@@ -1223,6 +1291,11 @@ impl DeviceLifetimeObservation {
         }
     }
 
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    )))]
     fn for_device(device: &Arc<wgpu::Device>) -> Self {
         static OBSERVATIONS: std::sync::OnceLock<
             std::sync::Mutex<
@@ -1264,6 +1337,49 @@ impl DeviceLifetimeObservation {
             crate::renderer::custom_render_pass::audit::record_device_lost_callback();
         }
 
+        Self { state }
+    }
+
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    ))]
+    fn for_browser_device(device: &Arc<wgpu::Device>) -> Self {
+        let completion = device
+            .as_webgpu()
+            .expect("renderer captured a WebGPU Device")
+            .lost();
+        let state = Arc::new(DeviceLifetimeState::default());
+        let callback_state = state.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let info = match wasm_bindgen_futures::JsFuture::from(completion).await {
+                Ok(info) => info,
+                Err(error) => {
+                    tracing::error!("WebGPU device loss observation failed: {error:?}");
+                    wasm_bindgen::throw_val(error);
+                }
+            };
+            let reason = js_sys::Reflect::get(&info, &"reason".into())
+                .expect("WebGPU device loss reason")
+                .as_string()
+                .expect("WebGPU device loss reason is a string");
+            let message = js_sys::Reflect::get(&info, &"message".into())
+                .expect("WebGPU device loss message")
+                .as_string()
+                .expect("WebGPU device loss message is a string");
+            let reason = match reason.as_str() {
+                "destroyed" => wgpu::DeviceLostReason::Destroyed,
+                "unknown" => wgpu::DeviceLostReason::Unknown,
+                _ => wasm_bindgen::throw_str("Unrecognized WebGPU device loss reason"),
+            };
+            callback_state.record(reason, message);
+        });
+        #[cfg(test)]
+        {
+            crate::renderer::custom_render_pass::audit::record_device_lifetime_observation();
+            crate::renderer::custom_render_pass::audit::record_device_lost_callback();
+        }
         Self { state }
     }
 
@@ -1360,6 +1476,12 @@ pub struct WgpuRenderer {
     // SPEC-HAL-081B: Persistent instance for creating additional surfaces (multi-window)
     instance: wgpu::Instance,
     device: Arc<wgpu::Device>,
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    ))]
+    device_lifetime_owner: Arc<RendererDeviceLifetimeOwner>,
     queue: Arc<wgpu::Queue>,
     // Surface format determined at construction (from adapter capabilities)
     surface_format: wgpu::TextureFormat,
@@ -2335,6 +2457,15 @@ impl WgpuRenderer {
         Self {
             instance,
             font_manager,
+            #[cfg(all(
+                target_arch = "wasm32",
+                target_os = "unknown",
+                target_feature = "atomics"
+            ))]
+            device_lifetime_owner: Arc::new(RendererDeviceLifetimeOwner {
+                device: device.clone(),
+                observation: std::sync::OnceLock::new(),
+            }),
             device,
             queue,
             surface_format,
@@ -5365,6 +5496,12 @@ impl WgpuRenderer {
             });
         GpuResources {
             device: self.device.clone(),
+            #[cfg(all(
+                target_arch = "wasm32",
+                target_os = "unknown",
+                target_feature = "atomics"
+            ))]
+            device_lifetime_owner: self.device_lifetime_owner.clone(),
             queue: self.queue.clone(),
             format: self.surface_format,
             adapter: self.adapter.clone(),
@@ -5477,7 +5614,10 @@ impl WgpuRenderer {
     // SPEC-HAL-263: Image Texture Registration API
     // ========================================================================
 
-    pub(crate) fn set_image_admission_wake(&self, wake: Box<dyn Fn() + Send + Sync>) {
+    pub(crate) fn set_image_admission_wake(
+        &self,
+        wake: Box<crate::renderer::gpu_custody::GpuNotify>,
+    ) {
         self.image_admission
             .get_or_init(Default::default)
             .set_wake(wake);
@@ -5530,6 +5670,17 @@ impl WgpuRenderer {
         if !self.image_textures.contains_key(&texture_id) {
             return Err(ImageAdmissionError::MissingRegistration(texture_id));
         }
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        ))]
+        let device = self.device_lifetime_owner.observe();
+        #[cfg(not(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        )))]
         let device = DeviceLifetimeObservation::for_device(&self.device);
         let entry = self
             .image_textures

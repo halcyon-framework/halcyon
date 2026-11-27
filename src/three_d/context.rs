@@ -1,4 +1,4 @@
-use std::any::Any;
+use crate::renderer::gpu_custody::{GpuErasedArc, GpuValue};
 use std::fmt;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -1309,8 +1309,14 @@ enum ContextGpuBindingRequest {
 }
 
 impl ContextGpuBindingRequest {
-    fn admit(self) -> ContextGpuBinding {
-        match self {
+    fn admit(self) -> Result<ContextGpuBinding, Context3DError> {
+        match &self {
+            Self::Live(gpu) if !gpu.renderer_device_matches() => {
+                return Err(Context3DError::GpuMaterializationUnavailable);
+            }
+            _ => {}
+        }
+        Ok(match self {
             Self::Live(gpu) => ContextGpuBinding::Live {
                 device_lifetime: gpu.observe_device_lifetime(),
                 gpu,
@@ -1325,7 +1331,7 @@ impl ContextGpuBindingRequest {
                 _device_identity: device_identity,
                 _queue_identity: queue_identity,
             },
-        }
+        })
     }
 }
 
@@ -1805,7 +1811,7 @@ impl Context3D {
         }
         let id = ContextId::new();
         let abi_layout = AbiLayout3D::try_new(limits.hard.min_uniform_buffer_offset_alignment)?;
-        let binding = binding.admit();
+        let binding = binding.admit()?;
         let resources = ResourceRegistry::new(id.clone(), limits, generation_ceiling);
         let context = Self {
             #[cfg(target_arch = "wasm32")]
@@ -4662,7 +4668,7 @@ impl DeferredTexture3D {
 }
 
 pub(super) struct ControlledResourceRecord3D {
-    source: Arc<dyn Any + Send + Sync>,
+    source: GpuErasedArc,
     bytes: u64,
 }
 
@@ -4673,12 +4679,11 @@ pub(super) struct ControlledResourceLease3D {
 }
 
 impl ControlledResourceLease3D {
-    pub(super) fn source<T: Any + Send + Sync>(&self) -> Result<Arc<T>, ControlledResourceError3D> {
+    pub(super) fn source<T: GpuValue>(&self) -> Result<Arc<T>, ControlledResourceError3D> {
         self.record
             .source
-            .clone()
-            .downcast()
-            .map_err(|_| ControlledResourceError3D::Payload)
+            .clone_as()
+            .ok_or(ControlledResourceError3D::Payload)
     }
 
     pub(super) fn belongs_to(&self, context: &Context3D) -> bool {
@@ -4783,23 +4788,28 @@ impl ResourceRegistry {
         })
     }
 
-    fn insert_controlled(
+    fn insert_controlled<T: GpuValue>(
         &mut self,
         kind: ControlledResourceKind3D,
-        source: Arc<dyn Any + Send + Sync>,
+        source: Arc<T>,
         bytes: u64,
         previous: Option<&ControlledResourceKey3D>,
     ) -> Result<ControlledResourceKey3D, ControlledResourceError3D> {
-        self.insert_controlled_with(kind, || source, bytes, previous)
+        self.insert_controlled_with(kind, || GpuErasedArc::new(source), bytes, previous)
     }
 
     fn insert_controlled_with(
         &mut self,
         kind: ControlledResourceKind3D,
-        source: impl FnOnce() -> Arc<dyn Any + Send + Sync>,
+        source: impl FnOnce() -> GpuErasedArc,
         bytes: u64,
         previous: Option<&ControlledResourceKey3D>,
     ) -> Result<ControlledResourceKey3D, ControlledResourceError3D> {
+        let bytes = bytes
+            .checked_add(GpuErasedArc::metadata_bytes() as u64)
+            .ok_or(Context3DError::ArithmeticOverflow {
+                operation: "charging GPU source erasure metadata",
+            })?;
         self.collect()?;
         let replaced = previous
             .map(|key| self.controlled_current(key, kind))
@@ -4903,7 +4913,7 @@ impl ResourceRegistry {
 }
 
 impl Context3D {
-    pub(super) fn register_controlled_source_with<T: Any + Send + Sync>(
+    pub(super) fn register_controlled_source_with<T: GpuValue>(
         &self,
         kind: ControlledResourceKind3D,
         bytes: u64,
@@ -4911,7 +4921,8 @@ impl Context3D {
     ) -> Result<(ControlledResourceKey3D, ControlledResourceLease3D), ControlledResourceError3D>
     {
         let mut registry = self.registry()?;
-        let key = registry.insert_controlled_with(kind, || source(), bytes, None)?;
+        let key =
+            registry.insert_controlled_with(kind, || GpuErasedArc::new(source()), bytes, None)?;
         let record = registry.controlled_current(&key, kind)?;
         let lease = ControlledResourceLease3D {
             key: key.clone(),
@@ -4920,7 +4931,7 @@ impl Context3D {
         Ok((key, lease))
     }
 
-    pub(super) fn register_controlled_source<T: Any + Send + Sync>(
+    pub(super) fn register_controlled_source<T: GpuValue>(
         &self,
         kind: ControlledResourceKind3D,
         source: Arc<T>,

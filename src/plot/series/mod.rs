@@ -68,6 +68,8 @@ pub struct PhysicalRect {
     pub height: u32,
 }
 
+macro_rules! declare_series {
+    ($($bounds:tt)*) => {
 /// SPEC-HAL-296: A data visualization within a Plot.
 ///
 /// Implementations produce GPU geometry from their data model, using
@@ -75,7 +77,7 @@ pub struct PhysicalRect {
 ///
 /// INV-296-S1: Series are rendered in z_order within the render pass.
 /// INV-296-S2: Series own their GPU pipelines and buffers.
-pub trait Series: Send + Sync {
+pub trait Series $($bounds)* {
     /// One-time initialization. Create pipelines, bind group layouts,
     /// and persistent buffers.
     ///
@@ -180,3 +182,18 @@ pub trait Series: Send + Sync {
     /// Append one data element. Implementation downcasts from Any.
     fn append_data(&mut self, _data: Box<dyn std::any::Any>) {}
 }
+    };
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    target_feature = "atomics"
+))]
+declare_series!();
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    target_feature = "atomics"
+)))]
+declare_series!(: Send + Sync);

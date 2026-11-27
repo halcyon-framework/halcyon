@@ -190,11 +190,11 @@ impl ImageBindingState {
 #[derive(Default)]
 pub(crate) struct ImageBindingInvalidations {
     pending: Mutex<Vec<ImageBindingIdentity>>,
-    wake: Option<Box<dyn Fn() + Send + Sync>>,
+    wake: Option<Box<super::gpu_custody::GpuNotify>>,
 }
 
 impl ImageBindingInvalidations {
-    pub(crate) fn new(wake: Option<Box<dyn Fn() + Send + Sync>>) -> Self {
+    pub(crate) fn new(wake: Option<Box<super::gpu_custody::GpuNotify>>) -> Self {
         Self {
             pending: Mutex::new(Vec::new()),
             wake,
@@ -279,7 +279,7 @@ pub struct ImageAdmissionMailbox {
 struct ImageAdmissionMailboxState {
     pending: Mutex<PendingImageAdmissions>,
     has_items: AtomicBool,
-    wake: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    wake: OnceLock<Box<super::gpu_custody::GpuNotify>>,
 }
 
 #[derive(Default)]
@@ -296,7 +296,7 @@ pub(crate) struct PendingImageAdmission {
     pub(crate) expected_view: Option<wgpu::TextureView>,
     // A pending exact-view request itself owns a physical view. Keep its real
     // storage charge alive even if the caller cancels before renderer drain.
-    _retained: Option<Arc<dyn Send + Sync>>,
+    _retained: Option<Arc<super::gpu_custody::GpuCharge>>,
     pub(crate) plot_front: Option<(
         super::wgpu_renderer::PendingImageRegistration,
         Arc<AtomicBool>,
@@ -304,7 +304,7 @@ pub(crate) struct PendingImageAdmission {
 }
 
 impl ImageAdmissionMailbox {
-    pub(crate) fn set_wake(&self, wake: Box<dyn Fn() + Send + Sync>) {
+    pub(crate) fn set_wake(&self, wake: Box<super::gpu_custody::GpuNotify>) {
         assert!(
             self.state.wake.set(wake).is_ok(),
             "Image admission wake owner already configured"
@@ -329,7 +329,7 @@ impl ImageAdmissionMailbox {
         &self,
         texture_id: u64,
         expected_view: Option<wgpu::TextureView>,
-        retained: Option<Arc<dyn Send + Sync>>,
+        retained: Option<Arc<super::gpu_custody::GpuCharge>>,
     ) -> ImageBindingRequest {
         let (request, mut admission) = ImageBindingRequest::pending(texture_id);
         admission.expected_view = expected_view;

@@ -1273,7 +1273,7 @@ impl OutlineGpuTarget {
             _view: tuple.view(),
             _revision: tuple.view_revision(),
         };
-        let retained: Arc<dyn Send + Sync> =
+        let retained: Arc<crate::renderer::gpu_custody::GpuCharge> =
             Arc::new((self.work.clone(), pin.read_lease(), binding, read, capture));
         if self
             .output

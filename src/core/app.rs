@@ -6307,7 +6307,7 @@ impl RetainedImageDependencies {
         let wake = wake.cloned().map(|proxy| {
             Box::new(move || {
                 let _ = proxy.send_event(());
-            }) as Box<dyn Fn() + Send + Sync>
+            }) as Box<crate::renderer::gpu_custody::GpuNotify>
         });
         Self {
             invalidations: Arc::new(ImageBindingInvalidations::new(wake)),

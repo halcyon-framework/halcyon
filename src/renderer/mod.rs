@@ -13,6 +13,7 @@ pub use frosted_glass::{RendererCompileError, FrostedGlassCompileRefusal,
 mod draw_plan_guard;
 pub mod glyph_atlas;
 pub mod gpu_arena;
+pub(crate) mod gpu_custody;
 pub mod image_binding;
 pub mod mesh_cache;
 pub mod path;

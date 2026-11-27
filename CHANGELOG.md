@@ -6,6 +6,8 @@ All notable changes to the Halcyon UI framework.
 
 Local release candidate.
 
+- **Continuous browser PBR camera progress** — Retain one compatible active asynchronous preparation while coalescing newer views. Publish the exact admitted view and wake its latest successor; incompatible source, target and effect changes still retire pending work.
+- **Atomic browser GPU custody** — Admit the scoped shared-memory WASM profile with UI-local GPU resources, renderer-owned device-lifetime observation and local GPU completion. Preserve native/non-atomic GPU threading guarantees and CPU proof Send contracts; consumer worker and hosting qualification remain separate.
 - **Nonblocking WebGPU PBR preparation** — Await controlled PBR program, pipeline, material, capacity and HDR error scopes asynchronously. Keep pending resources charged, retain compatible last-good output, and refuse failed, obsolete or retired results before publication.
 - **DateTimePicker popups** — Resolve placement against the admitted rectangular ancestor clip and refresh retained paint/hit projection after scroll or resize. Limit fallback interaction to visible popup geometry. The open joined shell uses an idle border one physical pixel wide and a trigger-only focus/capture underline; unqualified geometry retains existing placement behavior.
 - **Route-specific browser context menus** — Add checked `WebNavigation::with_context_menu_enabled_for` overrides, projected from committed routes onto the existing canvas listener. Unselected routes retain the App's startup policy. The local WASM helper advances to `halcyon-winit` 0.30.14; native Winit remains 0.30.12.

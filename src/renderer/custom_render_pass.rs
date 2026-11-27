@@ -486,7 +486,7 @@ impl CustomRenderPass {
         texture_id: u64,
         gpu: GpuResources,
         rect: PhysicalRect,
-        charge: Box<dyn Send + Sync>,
+        charge: Box<crate::renderer::gpu_custody::GpuCharge>,
     ) -> Result<Self, &'static str> {
         if !gpu.private_hdr_owner_live() {
             return Err("renderer retired");
@@ -528,6 +528,9 @@ impl CustomRenderPass {
         format: wgpu::TextureFormat,
     ) -> CustomRenderPassResult<Self> {
         Self::validate_rect(rect)?;
+        if !gpu.renderer_device_matches() {
+            return Err(CustomRenderPassError::Destroyed);
+        }
 
         let front_texture = Some(Self::create_offscreen_texture(
             &gpu,

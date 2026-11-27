@@ -239,39 +239,75 @@ impl Drop for ResizeRenderMarker {
     }
 }
 
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    target_feature = "atomics"
+)))]
 enum RenderWork {
     Frame(RenderJob),
     Resize(ResizeRenderMarker),
 }
 
-/// Shared pool of worker threads for Plot rendering.
+/// Shared Plot producer. Atomic browser GPU work stays on its calling UI agent.
 pub struct PlotRenderPool {
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    )))]
     job_tx: crossbeam_channel::Sender<RenderWork>,
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    )))]
     _workers: Vec<std::thread::JoinHandle<()>>,
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    ))]
+    closed: bool,
 }
 
 impl PlotRenderPool {
     pub fn new() -> Self {
-        let size = Self::pool_size();
-        let (tx, rx) = crossbeam_channel::unbounded();
-
-        let mut workers = Vec::with_capacity(size);
-        for i in 0..size {
-            let rx = rx.clone();
-            workers.push(
-                std::thread::Builder::new()
-                    .name(format!("plot-pool-{}", i))
-                    .spawn(move || Self::worker_loop(rx))
-                    .expect("failed to spawn pool worker"),
-            );
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        ))]
+        {
+            Self { closed: false }
         }
+        #[cfg(not(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        )))]
+        {
+            let size = Self::pool_size();
+            let (tx, rx) = crossbeam_channel::unbounded();
 
-        #[cfg(test)]
-        crate::renderer::custom_render_pass::audit::record_worker_pool(size);
+            let mut workers = Vec::with_capacity(size);
+            for i in 0..size {
+                let rx = rx.clone();
+                workers.push(
+                    std::thread::Builder::new()
+                        .name(format!("plot-pool-{}", i))
+                        .spawn(move || Self::worker_loop(rx))
+                        .expect("failed to spawn pool worker"),
+                );
+            }
 
-        Self {
-            job_tx: tx,
-            _workers: workers,
+            #[cfg(test)]
+            crate::renderer::custom_render_pass::audit::record_worker_pool(size);
+
+            Self {
+                job_tx: tx,
+                _workers: workers,
+            }
         }
     }
 
@@ -284,14 +320,28 @@ impl PlotRenderPool {
         completed_render: Arc<Mutex<Option<CompletedRenderPublication>>>,
         market_detail_publication: Option<(MarketDetailLink, Option<MarketDetailReferenceLine>)>,
     ) {
-        let _ = self.job_tx.send(RenderWork::Frame(RenderJob {
+        let job = RenderJob {
             renderer,
             params,
             generation,
             series_generation,
             completed_render,
             market_detail_publication,
-        }));
+        };
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        ))]
+        if !self.closed {
+            Self::produce_frame(job);
+        }
+        #[cfg(not(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        )))]
+        let _ = self.job_tx.send(RenderWork::Frame(job));
     }
 
     pub(super) fn submit_resize(
@@ -318,10 +368,29 @@ impl PlotRenderPool {
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            Ok(_) => self
-                .job_tx
-                .send(RenderWork::Resize(ResizeRenderMarker(Some(slot.clone()))))
-                .map_err(|_| ResizeRenderFailure::PoolClosed),
+            Ok(_) => {
+                let marker = ResizeRenderMarker(Some(slot.clone()));
+                #[cfg(all(
+                    target_arch = "wasm32",
+                    target_os = "unknown",
+                    target_feature = "atomics"
+                ))]
+                {
+                    if self.closed {
+                        return Err(ResizeRenderFailure::PoolClosed);
+                    }
+                    marker.produce();
+                    Ok(())
+                }
+                #[cfg(not(all(
+                    target_arch = "wasm32",
+                    target_os = "unknown",
+                    target_feature = "atomics"
+                )))]
+                self.job_tx
+                    .send(RenderWork::Resize(marker))
+                    .map_err(|_| ResizeRenderFailure::PoolClosed)
+            }
             Err(RESIZE_QUEUED) => Ok(()),
             Err(_) => {
                 let _ = slot.receiver.try_recv();
@@ -339,6 +408,11 @@ impl PlotRenderPool {
         r.resize(width, height)
     }
 
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    )))]
     fn pool_size() -> usize {
         let cpus = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -349,19 +423,54 @@ impl PlotRenderPool {
 
     #[cfg(test)]
     pub(crate) fn worker_count_for_test(&self) -> usize {
-        self._workers.len()
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        ))]
+        {
+            0
+        }
+        #[cfg(not(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        )))]
+        {
+            self._workers.len()
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn closed_for_test() -> Self {
-        let (job_tx, receiver) = crossbeam_channel::unbounded();
-        drop(receiver);
-        Self {
-            job_tx,
-            _workers: Vec::new(),
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        ))]
+        {
+            Self { closed: true }
+        }
+        #[cfg(not(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            target_feature = "atomics"
+        )))]
+        {
+            let (job_tx, receiver) = crossbeam_channel::unbounded();
+            drop(receiver);
+            Self {
+                job_tx,
+                _workers: Vec::new(),
+            }
         }
     }
 
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        target_feature = "atomics"
+    )))]
     fn worker_loop(rx: crossbeam_channel::Receiver<RenderWork>) {
         while let Ok(first_job) = rx.recv() {
             // Batch-drain: grab everything currently queued.
@@ -400,35 +509,40 @@ impl PlotRenderPool {
 
             // Render each unique renderer with its latest params
             for job in latest {
-                let Ok(mut renderer) = job.renderer.lock() else { continue };
-                let wake = renderer.gpu().image_admission.clone();
-
-                // Double-check: another worker may have rendered a newer
-                // generation between our drain and this lock acquisition
-                if render_job_is_coherent(
-                    renderer.last_rendered_generation(),
-                    renderer.series_generation(),
-                    job.generation,
-                    job.series_generation,
-                    renderer.presentation_pending(),
-                ) && renderer.render(&job.params).is_ok()
-                {
-                    renderer.set_last_rendered_generation(job.generation);
-                    let mut completed = job
-                        .completed_render
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    *completed = Some(CompletedRenderPublication {
-                        generation: job.generation,
-                        view_state: job.params.view_state,
-                        reference_tag: job.params.reference_tag,
-                        market_detail_publication: job.market_detail_publication,
-                    });
-                }
-                drop(renderer);
-                wake.notify();
+                Self::produce_frame(job);
             }
         }
+    }
+
+    fn produce_frame(job: RenderJob) {
+        let Ok(mut renderer) = job.renderer.lock() else {
+            return;
+        };
+        let wake = renderer.gpu().image_admission.clone();
+
+        // Recheck after acquiring the producer, including on native workers.
+        if render_job_is_coherent(
+            renderer.last_rendered_generation(),
+            renderer.series_generation(),
+            job.generation,
+            job.series_generation,
+            renderer.presentation_pending(),
+        ) && renderer.render(&job.params).is_ok()
+        {
+            renderer.set_last_rendered_generation(job.generation);
+            let mut completed = job
+                .completed_render
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *completed = Some(CompletedRenderPublication {
+                generation: job.generation,
+                view_state: job.params.view_state,
+                reference_tag: job.params.reference_tag,
+                market_detail_publication: job.market_detail_publication,
+            });
+        }
+        drop(renderer);
+        wake.notify();
     }
 }
 

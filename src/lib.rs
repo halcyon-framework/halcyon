@@ -1,14 +1,5 @@
 #![cfg_attr(test, allow(deprecated, non_snake_case, unused_imports))]
 
-#[cfg(all(
-    target_arch = "wasm32",
-    target_os = "unknown",
-    target_feature = "atomics"
-))]
-compile_error!(
-    "Halcyon browser transport requires non-atomic WASM; shared-memory WebGPU is not admitted"
-);
-
 #[cfg(not(target_arch = "wasm32"))]
 pub extern crate winit;
 #[cfg(target_arch = "wasm32")]

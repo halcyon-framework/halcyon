@@ -118,12 +118,12 @@ pub(super) use browser::{CandidateKey3D, CandidatePoll3D, GpuPreparation3D, Scop
 
 #[cfg(target_arch = "wasm32")]
 mod browser {
-    use std::any::Any;
     use std::future::Future;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::{PbrGpuResult3D, PreparationError3D};
+    use crate::renderer::gpu_custody::{GpuErasedArc, GpuValue};
     use crate::three_d::Context3D;
     use crate::three_d::context::{DynamicStorageLease3D, PendingRequestLease3D};
     use crate::three_d::pbr::PbrError3D;
@@ -188,7 +188,7 @@ mod browser {
         gpu: crate::renderer::wgpu_renderer::GpuResources,
         request: Arc<PendingRequestLease3D>,
     ) where
-        T: Send + Sync + 'static,
+        T: GpuValue,
         F: Future<Output = Option<wgpu::Error>> + 'static,
     {
         let error = match scopes {
@@ -232,7 +232,7 @@ mod browser {
         _pop: impl FnOnce(S) -> F,
     ) -> usize
     where
-        T: Send + Sync + 'static,
+        T: GpuValue,
         F: Future<Output = Option<wgpu::Error>> + 'static,
     {
         fn bytes<T, F, Task>(
@@ -254,7 +254,7 @@ mod browser {
         live: AtomicBool,
         revision: AtomicU64,
         context_owner: Context3D,
-        candidates: Mutex<Vec<(CandidateKey3D, Arc<dyn Any + Send + Sync>)>>,
+        candidates: Mutex<Vec<(CandidateKey3D, GpuErasedArc)>>,
         request: Mutex<Option<Arc<PendingRequestLease3D>>>,
         _metadata: DynamicStorageLease3D,
     }
@@ -299,7 +299,7 @@ mod browser {
             self.revision.load(Ordering::Acquire)
         }
 
-        fn candidate<T: Send + Sync + 'static>(
+        fn candidate<T: GpuValue>(
             &self,
             context: &Context3D,
             key: CandidateKey3D,
@@ -316,14 +316,14 @@ mod browser {
                 .map_err(|_| PbrError3D::Lock("GPU preparation candidates"))?;
             if let Some((_, candidate)) = candidates.iter().find(|(current, _)| *current == key) {
                 return candidate
-                    .clone()
-                    .downcast::<Candidate<T>>()
-                    .map_err(|_| PbrError3D::Association("GPU preparation candidate type"));
+                    .clone_as::<Candidate<T>>()
+                    .ok_or(PbrError3D::Association("GPU preparation candidate type"));
             }
             let bytes = std::mem::size_of::<Candidate<T>>()
-                + std::mem::size_of::<(CandidateKey3D, Arc<dyn Any + Send + Sync>)>()
+                + std::mem::size_of::<(CandidateKey3D, GpuErasedArc)>()
                 + completion_bytes::<T, _, _>(wgpu::Device::push_error_scope, |scope| scope.pop())
-                + 4 * std::mem::size_of::<usize>();
+                + 4 * std::mem::size_of::<usize>()
+                + GpuErasedArc::metadata_bytes();
             let candidate = Arc::new(Candidate {
                 completion: Mutex::new(Completion::Vacant),
                 _metadata: context.reserve_dynamic_storage(0, 0, 0, bytes as u64)?,
@@ -332,18 +332,17 @@ mod browser {
                 0,
                 0,
                 0,
-                (candidates.capacity()
-                    * std::mem::size_of::<(CandidateKey3D, Arc<dyn Any + Send + Sync>)>())
+                (candidates.capacity() * std::mem::size_of::<(CandidateKey3D, GpuErasedArc)>())
                     as u64,
             )?;
             candidates.try_reserve_exact(1).map_err(|_| {
                 PbrError3D::Association("GPU preparation candidate storage unavailable")
             })?;
-            candidates.push((key, candidate.clone()));
+            candidates.push((key, GpuErasedArc::new(candidate.clone())));
             Ok(candidate)
         }
 
-        pub(in crate::three_d) fn poll<T: Send + Sync + 'static>(
+        pub(in crate::three_d) fn poll<T: GpuValue>(
             &self,
             context: &Context3D,
             key: CandidateKey3D,
@@ -369,7 +368,7 @@ mod browser {
             }
         }
 
-        pub(in crate::three_d) fn poll_shared<T: Send + Sync + 'static>(
+        pub(in crate::three_d) fn poll_shared<T: GpuValue>(
             &self,
             context: &Context3D,
             key: CandidateKey3D,
@@ -390,7 +389,7 @@ mod browser {
             }
         }
 
-        pub(in crate::three_d) fn save<T: Send + Sync + 'static>(
+        pub(in crate::three_d) fn save<T: GpuValue>(
             &self,
             context: &Context3D,
             key: CandidateKey3D,
@@ -417,7 +416,7 @@ mod browser {
             completion: ScopeCompletion3D<F>,
         ) -> PbrGpuResult3D<R>
         where
-            T: Send + Sync + 'static,
+            T: GpuValue,
             F: Future<Output = Option<wgpu::Error>> + 'static,
         {
             let candidate = self.candidate::<T>(context, key)?;
