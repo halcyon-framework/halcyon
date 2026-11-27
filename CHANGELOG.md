@@ -13,9 +13,9 @@ Local release candidate.
 - **Route-specific browser context menus** — Add checked `WebNavigation::with_context_menu_enabled_for` overrides, projected from committed routes onto the existing canvas listener. Unselected routes retain the App's startup policy. The local WASM helper advances to `halcyon-winit` 0.30.14; native Winit remains 0.30.12.
 - **Web Showcase cadence help** — Add optional hover guidance to the existing screen-updates status label, distinguishing browser-controlled update cadence from GPU FPS.
 - **Browser 3D shader realization** — Emit validated controlled shader IR as WGSL for WebGPU, select its sole entry point, and preserve the finite-color bound through an exact bitcast. This corrects the Showcase Viewport 3D pipeline creation failure on the observed browser; broader browser conformance remains unverified.
-- **SystemUI source-range effects on macOS** — Use tight CoreText outline bounds from the admitted font bytes when the parser cannot supply a selected monochrome glyph’s outline. This restores selected foreground and outline-positioned glow effects without changing the original text layout.
 - **Switch activation** — Commit a captured mouse press once on release inside the control. Pointer exit, outside release, capture loss, and disabling cancel the pending activation.
 - **Switch appearance** — Add checked per-instance `SwitchAppearance`, `SwitchAppearanceError`, and `Switch::with_switch_appearance`. Opt in to a rounded track and moving rounded thumb with configurable OFF and ON colors.
+- **SystemUI source-range effects on macOS** — Use tight CoreText outline bounds from the admitted font bytes when the parser cannot supply a selected monochrome glyph’s outline. This restores selected foreground and outline-positioned glow effects without changing the original text layout.
 
 ## [0.271.4-beta] — 2026-11-26
 

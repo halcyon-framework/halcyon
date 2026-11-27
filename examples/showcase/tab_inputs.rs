@@ -51,6 +51,70 @@ use web_time::{Duration, Instant};
 use super::*;
 use super::tip::Tip;
 
+struct InputColumns {
+    id: WidgetInternalId,
+}
+
+impl WidgetDowncast for InputColumns {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+impl Widget for InputColumns {
+    fn layout(
+        &mut self,
+        cx: &mut LayoutContext,
+        constraints: Constraints,
+        children: &[NodeId],
+    ) -> LayoutResult {
+        let width = constraints.max_width;
+        let side_by_side = width >= 640.0;
+        let child_width = if side_by_side {
+            (width - 10.0) / 2.0
+        } else {
+            width
+        };
+        let mut height: f32 = 0.0;
+        let mut content_width = width;
+        for (index, &child) in children.iter().enumerate() {
+            let result = cx.layout_child_full(
+                child,
+                Constraints::new(child_width, child_width, 0.0, f32::INFINITY),
+            );
+            let x = if side_by_side {
+                index as f32 * (child_width + 10.0)
+            } else {
+                0.0
+            };
+            let y = if side_by_side || index == 0 {
+                0.0
+            } else {
+                height + 10.0
+            };
+            cx.set_child_rect(child, RectF::new(x, y, child_width, result.size.height));
+            height = height.max(y + result.size.height);
+            content_width = content_width.max(x + result.content_size.width);
+        }
+        let content = Size::new(content_width, height);
+        LayoutResult::new(constraints.constrain(Size::new(width, height)), content)
+    }
+
+    fn paint(&self, _cx: &mut PaintContext, _rect: RectF, _children: &[NodeId]) {}
+
+    fn id(&self) -> WidgetInternalId {
+        self.id
+    }
+
+    fn hit_testable(&self) -> bool {
+        false
+    }
+}
+
 fn schedule_point_available(value: DateTimeValue) -> bool {
     let seconds = value.time.hour as u32 * 3600
         + value.time.minute as u32 * 60
@@ -464,11 +528,9 @@ impl ShowcaseScreen {
 
         let columns_row = cx.tree.add_child(
             col,
-            Box::new(
-                Flex::row()
-                    .with_spacing(10.0)
-                    .with_align_items(Alignment::Start),
-            ),
+            Box::new(InputColumns {
+                id: WidgetInternalId::new(),
+            }),
             None,
             0,
         );
@@ -1227,11 +1289,15 @@ mod bounded_text_area_tests {
 
     impl MountedForm {
         fn new(size: Size) -> Self {
+            Self::with_screen(size, ShowcaseScreen::new())
+        }
+
+        fn with_screen(size: Size, mut screen: ShowcaseScreen) -> Self {
             let config = showcase_app_config(std::iter::empty());
             let mut app = AppContext::new(config.theme.clone());
             let mut tree = WidgetTree::new();
             let root = tree.create_root(Box::new(ScreenHost::new()), None, 0);
-            ShowcaseScreen::new().build(&mut ScreenFrameContext {
+            screen.build(&mut ScreenFrameContext {
                 app: &mut app,
                 tree: &mut tree,
                 parent_node: root,
@@ -1440,6 +1506,136 @@ mod bounded_text_area_tests {
                 }
             }
             panic!("TextArea visual offset and visible caret did not settle");
+        }
+    }
+
+    #[test]
+    fn narrow_inputs_breakpoint_is_the_allocated_content_width() {
+        let mut tree = WidgetTree::new();
+        let root = tree.create_root(
+            Box::new(InputColumns { id: WidgetInternalId::new() }), None, 0,
+        );
+        let left = tree.add_child(root, Box::new(FixedSpacer::vertical(40.0)), None, 0);
+        let right = tree.add_child(root, Box::new(FixedSpacer::vertical(60.0)), None, 1);
+        let theme = Theme::default();
+        let mut text = FontManagerTextEngine::new_with_system_ui();
+        let mut ticker = EngineTicker::new(Instant::now());
+        for width in [639.0, 640.0, 1000.0, 320.0] {
+            ticker.begin_frame();
+            let _layout = LayoutAuthorityGuard::enter();
+            layout_tree(
+                &mut tree, root, Constraints::tight(Size::new(width, 240.0)),
+                &theme, &mut text, None,
+            );
+            let left = tree.get_rect(left).unwrap();
+            let right = tree.get_rect(right).unwrap();
+            if width < 640.0 {
+                assert_eq!(left, RectF::new(0.0, 0.0, width, 40.0));
+                assert_eq!(right, RectF::new(0.0, 50.0, width, 60.0));
+            } else {
+                let column_width = (width - 10.0) / 2.0;
+                assert_eq!(left, RectF::new(0.0, 0.0, column_width, 40.0));
+                assert_eq!(right, RectF::new(column_width + 10.0, 0.0, column_width, 60.0));
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_inputs_keep_mounted_controls_and_constraint_owned_columns() {
+        use halcyon::widgets::spin_box::SpinBox;
+        use halcyon::widgets::text_field::TextField;
+
+        let mut form = MountedForm::with_screen(
+            Size::new(780.0, 900.0),
+            ShowcaseScreen::new_dedicated(),
+        );
+        form.frame();
+        let mut nodes = Vec::new();
+        let mut pending = vec![form.root];
+        while let Some(node) = pending.pop() {
+            nodes.push(node);
+            pending.extend(form.tree.children(node));
+        }
+        let columns = *nodes.iter().find(|&&node| {
+            form.tree.node(node).unwrap().widget().as_any().is::<InputColumns>()
+        }).unwrap();
+        let spin = *nodes.iter().find(|&&node| {
+            form.tree.node(node).unwrap().widget().as_any().is::<SpinBox>()
+        }).unwrap();
+        let editor = *nodes.iter().find(|&&node| {
+            form.tree.node(node).unwrap().widget().as_any().downcast_ref::<TextField>()
+                .is_some_and(|field| field.text() == "10.42.18.77:9443")
+        }).unwrap();
+        let owners: Vec<_> = nodes.iter().map(|&node| form.tree.widget_id_for_node(node)).collect();
+        let click = |form: &mut MountedForm, position| {
+            for state in [RawButtonState::Pressed, RawButtonState::Released] {
+                form.route(RawInputEvent::PointerButton {
+                    window_id: WindowId::PRIMARY,
+                    time: form.now,
+                    device: PointerDevice::Mouse,
+                    button: PointerButton::Primary,
+                    state,
+                    position,
+                });
+            }
+        };
+        let geom = &form.theme.geometry;
+        let font_size = form.theme.typography.input_font_size;
+        let value_width = (form.text.measure("65535", font_size).0 + geom.text_field.padding_x * 2.0)
+            .max(form.text.measure("999", font_size).0 + geom.text_field.padding_x * 2.0)
+            .max(geom.spin_box.value_width);
+        let spin_rect = form.visible_rect(spin);
+        let increment = Point::new(
+            spin_rect.x + value_width + geom.spin_box.button_width * 1.5,
+            spin_rect.center().y,
+        );
+        click(&mut form, increment);
+        assert_eq!(form.widget::<SpinBox>(spin).value(), 9444);
+        let editor_center = form.visible_rect(editor).center();
+        click(&mut form, editor_center);
+        form.route(RawInputEvent::TextInput {
+            window_id: WindowId::PRIMARY,
+            time: form.now,
+            text: "x".into(),
+            modifiers: Modifiers::default(),
+        });
+        let edited = form.widget::<TextField>(editor).text().to_owned();
+        assert!(edited.contains('x'));
+
+        for size in [
+            Size::new(320.0, 430.0),
+            Size::new(390.0, 844.0),
+            Size::new(664.0, 900.0),
+            Size::new(780.0, 900.0),
+        ] {
+            form.size = size;
+            form.tree.mark_layout_dirty(form.root);
+            form.frame();
+            let children = form.tree.children(columns);
+            assert_eq!(children.len(), 2);
+            let left = form.tree.get_rect(children[0]).unwrap();
+            let right = form.tree.get_rect(children[1]).unwrap();
+            let width = form.rect(columns).width;
+            if width >= 640.0 {
+                assert!((left.width - right.width).abs() < 0.01);
+                assert!((right.x - left.right() - 10.0).abs() < 0.01);
+                assert_eq!(left.y, right.y);
+            } else {
+                assert_eq!(left.x, right.x);
+                assert!((left.width - width).abs() < 0.01);
+                assert!((right.width - width).abs() < 0.01);
+                assert!((right.y - left.bottom() - 10.0).abs() < 0.01);
+            }
+            for &column in &children {
+                for pair in form.tree.children(column).windows(2) {
+                    let first = form.rect(pair[0]);
+                    let second = form.rect(pair[1]);
+                    assert!(second.y >= first.bottom(), "groups overlap at {size:?}");
+                }
+            }
+            assert_eq!(form.widget::<SpinBox>(spin).value(), 9444);
+            assert_eq!(form.widget::<TextField>(editor).text(), edited);
+            assert_eq!(nodes.iter().map(|&node| form.tree.widget_id_for_node(node)).collect::<Vec<_>>(), owners);
         }
     }
 
