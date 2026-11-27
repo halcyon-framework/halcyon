@@ -845,7 +845,7 @@ pub(super) struct PbrProgram3D {
     color_layout: Option<wgpu::BindGroupLayout>,
     profile: super::indirect::Presence3D,
     sampling: SamplingFamily3D,
-    #[cfg(test)]
+    #[cfg(any(test, target_arch = "wasm32"))]
     pub(super) object_binding_bytes: u64,
     shadow_layout: Option<wgpu::PipelineLayout>,
     shadow_pipelines: Mutex<HashMap<(bool, bool), Arc<PbrPipeline3D>>>,
@@ -859,6 +859,13 @@ pub(super) struct PbrProgram3D {
 pub(super) struct PbrPipeline3D {
     pub(super) pipeline: wgpu::RenderPipeline,
     _charge: ControlledPipelineResidency,
+}
+
+#[cfg(target_arch = "wasm32")]
+struct PendingPbrPipeline3D {
+    pipeline: PbrPipeline3D,
+    // The weak ready cache is not custody while validation is outstanding.
+    _program: Arc<PbrProgram3D>,
 }
 
 pub(super) struct PbrGeometryGpu3D {
@@ -1312,10 +1319,11 @@ impl DirectTarget3D {
             for cube in [false, true] {
                 let cull = raster.culls_back_faces();
                 if !pipelines.contains_key(&(family, cull, cube)) {
-                    pipelines.insert(
-                        (family, cull, cube),
-                        program.shadow_pipeline(context, cull, cube)?,
-                    );
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let pipeline = program.shadow_pipeline(context, cull, cube)?;
+                    #[cfg(target_arch = "wasm32")]
+                    let pipeline = program.prepared_shadow_pipeline(cull, cube)?;
+                    pipelines.insert((family, cull, cube), pipeline);
                 }
             }
         }
@@ -2335,6 +2343,15 @@ struct MaterialCapacityTargetCharge3D {
     bytes: u64,
 }
 
+struct CapacityStaging3D {
+    staging: wgpu::Buffer,
+    ledger: Vec<u8>,
+    charge: DynamicStorageLease3D,
+    target_charge: MaterialCapacityTargetCharge3D,
+    slots: Vec<Arc<MaterialCapacitySlot3D>>,
+    growth: DynamicStorageLease3D,
+}
+
 impl Drop for MaterialCapacityTargetCharge3D {
     fn drop(&mut self) {
         let old = self
@@ -2436,7 +2453,7 @@ impl MaterialCapacity3D {
         prepared: &mut PreparedMaterialScene3D,
         was_committed: bool,
         #[cfg(any(test, feature = "test-harness"))] mut timing: Option<&mut PbrPreparationTiming3D>,
-    ) -> Result<(), super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<()> {
         use super::pbr::PbrError3D;
         if prepared.capacity_slot.is_some() {
             return Ok(());
@@ -2462,9 +2479,9 @@ impl MaterialCapacity3D {
         .ok_or(PbrError3D::Association("capacity upload ledger overflow"))?;
         let gpu = context.gpu_resources()?;
         if size % 4 != 0 || size > gpu.device.limits().max_buffer_size {
-            return Err(PbrError3D::Association(
-                "capacity upload ledger Device/alignment limit",
-            ));
+            return Err(
+                (PbrError3D::Association("capacity upload ledger Device/alignment limit")).into(),
+            );
         }
         let storage = resources.uniforms.view.size()
             + resources.uniforms.objects.size()
@@ -2472,61 +2489,105 @@ impl MaterialCapacity3D {
             + direct.light.size()
             + direct.transforms.size()
             + direct.views.size();
-        let target_charge = self.budget.reserve(
+        #[cfg(target_arch = "wasm32")]
+        let preparation = context
+            .gpu_preparation
+            .as_ref()
+            .ok_or(PbrError3D::Association("PBR GPU preparation owner absent"))?;
+        #[cfg_attr(not(any(test, feature = "test-harness")), allow(unused_mut))]
+        let mut allocate = || -> super::gpu_preparation::PbrGpuResult3D<CapacityStaging3D> {
+            let target_charge = self.budget.reserve(
+                context,
+                storage
+                    .checked_add(size)
+                    .ok_or(PbrError3D::Association("capacity target storage overflow"))?,
+                u64::from(gpu.device.limits().min_uniform_buffer_offset_alignment).max(16),
+            )?;
+            // Each slot charges its final slice entry. During growth the old slice
+            // additionally remains alive until the replacement slice is installed.
+            let _growth = context.reserve_dynamic_storage(
+                0,
+                0,
+                0,
+                (self.slots.len() * std::mem::size_of::<Arc<MaterialCapacitySlot3D>>()) as u64,
+            )?;
+            let mut slots = Vec::new();
+            slots
+                .try_reserve_exact(self.slots.len() + 1)
+                .map_err(|_| PbrError3D::Association("capacity owner storage unavailable"))?;
+            slots.extend(self.slots.iter().cloned());
+            let metadata = size
+                .checked_add(
+                    (std::mem::size_of::<MaterialCapacitySlot3D>()
+                        + std::mem::size_of::<Arc<MaterialCapacitySlot3D>>()
+                        + std::mem::size_of::<super::hdr::HdrWriterCompletion3D>()
+                        + std::mem::size_of::<CapacityMap3D>()
+                        + 6 * std::mem::size_of::<usize>()) as u64,
+                )
+                .ok_or(PbrError3D::Association("capacity metadata overflow"))?;
+            let charge = context.reserve_dynamic_storage(size, 0, 1, metadata)?;
+            let mut ledger = Vec::new();
+            ledger
+                .try_reserve_exact(
+                    usize::try_from(size)
+                        .map_err(|_| PbrError3D::Association("capacity ledger not addressable"))?,
+                )
+                .map_err(|_| PbrError3D::Association("capacity ledger storage unavailable"))?;
+            ledger.resize(size as usize, 0);
+            let allocation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("D target retained encoder-bound staging"),
+                size,
+                usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            });
+            #[cfg(any(test, feature = "test-harness"))]
+            if let Some(t) = timing.as_deref_mut() {
+                t.gpu_creations[0] += 1;
+            }
+            let validation = validation_scope.pop();
+            let allocation = allocation_scope.pop();
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(error) = pollster::block_on(validation).or(pollster::block_on(allocation)) {
+                return Err((PbrError3D::Shader(error.to_string())).into());
+            }
+            let staged = CapacityStaging3D {
+                staging,
+                ledger,
+                charge,
+                target_charge,
+                slots,
+                growth: _growth,
+            };
+            #[cfg(target_arch = "wasm32")]
+            return preparation.defer(
+                context,
+                super::gpu_preparation::CandidateKey3D::Capacity(was_committed),
+                staged,
+                super::gpu_preparation::ScopeCompletion3D::Pair(validation, allocation),
+            );
+            #[cfg(not(target_arch = "wasm32"))]
+            Ok(staged)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let staged = match preparation.poll::<CapacityStaging3D>(
             context,
-            storage
-                .checked_add(size)
-                .ok_or(PbrError3D::Association("capacity target storage overflow"))?,
-            u64::from(gpu.device.limits().min_uniform_buffer_offset_alignment).max(16),
-        )?;
-        // Each slot charges its final slice entry. During growth the old slice
-        // additionally remains alive until the replacement slice is installed.
-        let _growth = context.reserve_dynamic_storage(
-            0,
-            0,
-            0,
-            (self.slots.len() * std::mem::size_of::<Arc<MaterialCapacitySlot3D>>()) as u64,
-        )?;
-        let mut slots = Vec::new();
-        slots
-            .try_reserve_exact(self.slots.len() + 1)
-            .map_err(|_| PbrError3D::Association("capacity owner storage unavailable"))?;
-        slots.extend(self.slots.iter().cloned());
-        let metadata = size
-            .checked_add(
-                (std::mem::size_of::<MaterialCapacitySlot3D>()
-                    + std::mem::size_of::<Arc<MaterialCapacitySlot3D>>()
-                    + std::mem::size_of::<super::hdr::HdrWriterCompletion3D>()
-                    + std::mem::size_of::<CapacityMap3D>()
-                    + 6 * std::mem::size_of::<usize>()) as u64,
-            )
-            .ok_or(PbrError3D::Association("capacity metadata overflow"))?;
-        let charge = context.reserve_dynamic_storage(size, 0, 1, metadata)?;
-        let mut ledger = Vec::new();
-        ledger
-            .try_reserve_exact(
-                usize::try_from(size)
-                    .map_err(|_| PbrError3D::Association("capacity ledger not addressable"))?,
-            )
-            .map_err(|_| PbrError3D::Association("capacity ledger storage unavailable"))?;
-        ledger.resize(size as usize, 0);
-        let allocation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("D target retained encoder-bound staging"),
-            size,
-            usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: true,
-        });
-        #[cfg(any(test, feature = "test-harness"))]
-        if let Some(t) = timing.as_deref_mut() {
-            t.gpu_creations[0] += 1;
-        }
-        let validation = pollster::block_on(validation_scope.pop());
-        let allocation = pollster::block_on(allocation_scope.pop());
-        if let Some(error) = validation.or(allocation) {
-            return Err(PbrError3D::Shader(error.to_string()));
-        }
+            super::gpu_preparation::CandidateKey3D::Capacity(was_committed),
+        )? {
+            super::gpu_preparation::CandidatePoll3D::Ready(staged) => staged,
+            super::gpu_preparation::CandidatePoll3D::Vacant => allocate()?,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let staged = allocate()?;
+        let CapacityStaging3D {
+            staging,
+            ledger,
+            charge,
+            target_charge,
+            mut slots,
+            growth: _growth,
+        } = staged;
         let completion = Arc::new(super::hdr::HdrWriterCompletion3D::default());
         // A material installed in the target already has an actual successful
         // writer submit. This new observation covers that earlier submitted use.
@@ -3443,7 +3504,7 @@ fn material_program(
     profile: super::indirect::Presence3D,
     sampling: SamplingFamily3D,
     reveal: bool,
-) -> Result<Arc<PbrProgram3D>, super::pbr::PbrError3D> {
+) -> super::gpu_preparation::PbrGpuResult3D<Arc<PbrProgram3D>> {
     if reveal {
         return context.reveal_program(profile, sampling);
     }
@@ -3462,7 +3523,7 @@ fn material_program(
         .lock()
         .map_err(|_| super::pbr::PbrError3D::Lock("PBR module cache"))?;
     if p.is_none() {
-        *p = Some(Arc::new(PbrProgram3D::new(context)?));
+        *p = Some(PbrProgram3D::new(context)?);
     }
     Ok(p.as_ref().unwrap().clone())
 }
@@ -3715,7 +3776,7 @@ pub(crate) fn prepare_material_scene_with_capacity(
     #[cfg(any(test, feature = "test-harness"))] mut coarse: Option<
         &mut super::viewport::PbrCoarseTiming3D,
     >,
-) -> Result<MaterialScenePreparation3D, super::pbr::PbrError3D> {
+) -> super::gpu_preparation::PbrGpuResult3D<MaterialScenePreparation3D> {
     #[cfg(any(test, feature = "test-harness"))]
     debug_assert!(timing.is_none() || coarse.is_none());
     // Object112 capacity slots cannot be rebound as Object128. Existing current
@@ -3817,60 +3878,103 @@ pub(crate) fn prepare_material_scene_with_capacity(
             }
         }
     }
-    let mut prepared = prepare_material_scene_with_reveal(
-        context,
-        source.clone(),
-        view,
-        origin,
-        extent,
-        current.as_ref(),
-        captured,
-        reveal,
-        committed_predecessor,
-        #[cfg(any(test, feature = "test-harness"))]
-        timing.as_deref_mut(),
-    )?;
-    if eligible {
-        if let MaterialScenePreparation3D::New(next) = &mut prepared {
-            if next.uploads.as_ref().is_some_and(|uploads| {
-                uploads.has_no_new_uploads(current.as_ref().expect("eligible current source"))
-            }) {
-                if capacity.is_none() {
-                    if capacity_budget.is_none() {
-                        *capacity_budget = Some(MaterialCapacityBudget3D::new(context)?);
+    #[cfg(target_arch = "wasm32")]
+    let saved = {
+        use super::gpu_preparation::{CandidateKey3D, CandidatePoll3D};
+        let preparation =
+            context
+                .gpu_preparation
+                .as_ref()
+                .ok_or(super::pbr::PbrError3D::Association(
+                    "PBR GPU preparation owner absent",
+                ))?;
+        match preparation
+            .poll::<MaterialScenePreparation3D>(context, CandidateKey3D::PreparedMaterial)?
+        {
+            CandidatePoll3D::Ready(prepared) => Some(prepared),
+            CandidatePoll3D::Vacant => None,
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let saved = None;
+    let mut prepared = if let Some(prepared) = saved {
+        prepared
+    } else {
+        prepare_material_scene_with_reveal(
+            context,
+            source.clone(),
+            view,
+            origin,
+            extent,
+            current.as_ref(),
+            captured,
+            reveal,
+            committed_predecessor,
+            #[cfg(any(test, feature = "test-harness"))]
+            timing.as_deref_mut(),
+        )?
+    };
+    let retained = (|| -> super::gpu_preparation::PbrGpuResult3D<()> {
+        if eligible {
+            if let MaterialScenePreparation3D::New(next) = &mut prepared {
+                if next.uploads.as_ref().is_some_and(|uploads| {
+                    uploads.has_no_new_uploads(current.as_ref().expect("eligible current source"))
+                }) {
+                    if capacity.is_none() {
+                        if capacity_budget.is_none() {
+                            *capacity_budget = Some(MaterialCapacityBudget3D::new(context)?);
+                        }
+                        *capacity = Some(MaterialCapacity3D::new(
+                            context,
+                            source,
+                            origin,
+                            extent,
+                            capacity_budget.as_ref().unwrap().clone(),
+                        )?);
                     }
-                    *capacity = Some(MaterialCapacity3D::new(
+                    let pool = capacity.as_mut().unwrap();
+                    pool.retain(
                         context,
-                        source,
-                        origin,
-                        extent,
-                        capacity_budget.as_ref().unwrap().clone(),
-                    )?);
-                }
-                let pool = capacity.as_mut().unwrap();
-                pool.retain(
-                    context,
-                    current.as_mut().expect("eligible committed source"),
-                    true,
+                        current.as_mut().expect("eligible committed source"),
+                        true,
+                        #[cfg(any(test, feature = "test-harness"))]
+                        timing.as_deref_mut(),
+                    )?;
+                    pool.retain(
+                        context,
+                        next,
+                        false,
+                        #[cfg(any(test, feature = "test-harness"))]
+                        timing.as_deref_mut(),
+                    )?;
+                    next.uploads = None;
                     #[cfg(any(test, feature = "test-harness"))]
-                    timing.as_deref_mut(),
-                )?;
-                pool.retain(
-                    context,
-                    next,
-                    false,
-                    #[cfg(any(test, feature = "test-harness"))]
-                    timing.as_deref_mut(),
-                )?;
-                next.uploads = None;
-                #[cfg(any(test, feature = "test-harness"))]
-                if let Some(t) = timing {
-                    t.capacity_slots = pool.slots.len();
-                    t.capacity_ready_revision = pool.ready_revision;
+                    if let Some(t) = timing {
+                        t.capacity_slots = pool.slots.len();
+                        t.capacity_ready_revision = pool.ready_revision;
+                    }
                 }
             }
         }
+        Ok(())
+    })();
+    #[cfg(target_arch = "wasm32")]
+    if matches!(
+        &retained,
+        Err(super::gpu_preparation::PreparationError3D::Pending)
+    ) {
+        context
+            .gpu_preparation
+            .as_ref()
+            .expect("qualified preparation")
+            .save(
+                context,
+                super::gpu_preparation::CandidateKey3D::PreparedMaterial,
+                prepared,
+            )?;
+        return Err((super::gpu_preparation::PreparationError3D::Pending).into());
     }
+    retained?;
     Ok(prepared)
 }
 
@@ -3911,9 +4015,26 @@ fn prepare_material_scene_with_reveal(
     reveal: Option<&super::object_reveal::ObjectRevealFrame3D>,
     committed_predecessor: Option<&Arc<super::pbr::MaterialSceneSource3D>>,
     #[cfg(any(test, feature = "test-harness"))] mut timing: Option<&mut PbrPreparationTiming3D>,
-) -> Result<MaterialScenePreparation3D, super::pbr::PbrError3D> {
+) -> super::gpu_preparation::PbrGpuResult3D<MaterialScenePreparation3D> {
     use super::pbr::PbrError3D;
     use super::snapshot::CommittedMaterialPacket3D;
+    #[cfg(target_arch = "wasm32")]
+    let preparation = {
+        use super::gpu_preparation::{CandidateKey3D, CandidatePoll3D};
+        let preparation = context
+            .gpu_preparation
+            .as_ref()
+            .ok_or(PbrError3D::Association("PBR GPU preparation owner absent"))?;
+        if let CandidatePoll3D::Ready(result) =
+            preparation.poll::<Result<MaterialScenePreparation3D, PbrError3D>>(
+                context,
+                CandidateKey3D::Material,
+            )?
+        {
+            return result.map_err(Into::into);
+        }
+        preparation
+    };
     super::hdr::scene_capabilities(&context.gpu_resources()?.device, source.samples)
         .map_err(|e| PbrError3D::Shader(e.to_string()))?;
     #[cfg(any(test, feature = "test-harness"))]
@@ -3945,7 +4066,7 @@ fn prepare_material_scene_with_reveal(
     let packed = packed?;
     let gpu = context.gpu_resources()?;
     if !gpu.private_hdr_owner_live() {
-        return Err(PbrError3D::Association("renderer retired"));
+        return Err((PbrError3D::Association("renderer retired")).into());
     }
     if source.snapshot.packets.is_empty() && source.direct.is_none() && source.indirect.is_none() {
         #[cfg(any(test, feature = "test-harness"))]
@@ -4073,6 +4194,25 @@ fn prepare_material_scene_with_reveal(
         }
     }
     let program = programs.first().cloned();
+    #[cfg(target_arch = "wasm32")]
+    for packet in source.snapshot.packets.iter() {
+        if let CommittedMaterialPacket3D::PbrMaterial {
+            raster, material, ..
+        } = packet
+        {
+            let program = programs
+                .iter()
+                .find(|p| p.sampling == material.data.source.sampling)
+                .expect("captured sampling program");
+            program.pipeline(context, source.samples, raster.culls_back_faces(), false)?;
+            if source.direct.is_some() {
+                // DirectTarget3D admits these same two original winding variants.
+                for cube in [false, true] {
+                    program.shadow_pipeline(context, raster.culls_back_faces(), cube)?;
+                }
+            }
+        }
+    }
     let observer_bytes = 0u64;
     #[cfg(test)]
     let mut observer_bytes = observer_bytes;
@@ -4086,9 +4226,10 @@ fn prepare_material_scene_with_reveal(
                 operation: "sizing exact numeric observation",
             })?;
         if observer_bytes > u64::from(gpu.device.limits().max_storage_buffer_binding_size) {
-            return Err(PbrError3D::Association(
+            return Err((PbrError3D::Association(
                 "numeric observation exceeds actual storage binding limit",
-            ));
+            ))
+            .into());
         }
         upload.consume(16)?;
         validate_budget(
@@ -4415,9 +4556,10 @@ fn prepare_material_scene_with_reveal(
                                 if count * 52 > context.limits().hard.max_buffer_size
                                     || count * 12 > context.limits().hard.max_buffer_size
                                 {
-                                    return Err(PbrError3D::Association(
+                                    return Err((PbrError3D::Association(
                                         "D expanded buffer exceeds Device limit",
-                                    ));
+                                    ))
+                                    .into());
                                 }
                                 upload.consume(bytes)?;
                                 let cpu = bytes
@@ -4593,9 +4735,10 @@ fn prepare_material_scene_with_reveal(
                                     MaterialSamplerGpu3D::V2(context.prepare_mip_sampler(s, t)?)
                                 }
                                 _ => {
-                                    return Err(PbrError3D::Association(
+                                    return Err((PbrError3D::Association(
                                         "mismatched typed texture/sampler family",
-                                    ));
+                                    ))
+                                    .into());
                                 }
                             };
                             sampler_map.insert(sk, gpu);
@@ -4690,8 +4833,15 @@ fn prepare_material_scene_with_reveal(
                             false
                         }
                     };
+                    #[cfg(not(target_arch = "wasm32"))]
                     let pipeline = program.pipeline(
                         context,
+                        source.samples,
+                        class.culls_back_faces(),
+                        observe,
+                    )?;
+                    #[cfg(target_arch = "wasm32")]
+                    let pipeline = program.prepared_pipeline(
                         source.samples,
                         class.culls_back_faces(),
                         observe,
@@ -4820,51 +4970,96 @@ fn prepare_material_scene_with_reveal(
             uploads,
         ))
     })();
-    let validation = pollster::block_on(validation_scope.pop());
-    let allocation = pollster::block_on(allocation_scope.pop());
-    if let Some(error) = validation.or(allocation) {
-        return Err(PbrError3D::Shader(error.to_string()));
+    let validation = validation_scope.pop();
+    let allocation = allocation_scope.pop();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(error) = pollster::block_on(validation).or(pollster::block_on(allocation)) {
+        return Err((PbrError3D::Shader(error.to_string())).into());
     }
     #[cfg(any(test, feature = "test-harness"))]
     creations.add_to(timing.as_deref_mut());
-    let (retained, uploads) = built?;
-    #[cfg(any(test, feature = "test-harness"))]
-    if let Some(t) = timing {
-        t.branch = "New";
-        t.uniform_buffers += 3;
-        t.geometry_plans += uploads.geometry.len() + uploads.legacy_geometry.len();
-        t.texture_plans += uploads.textures.len();
-        t.mip_plans += uploads.mips.len();
-    }
-    let write_shadows = retained.direct.as_ref().is_some_and(|d| {
-        !current
-            .and_then(PreparedMaterialScene3D::retained)
-            .and_then(|s| s.direct.as_ref())
-            .is_some_and(|old| Arc::ptr_eq(d, old))
-    });
-    Ok(MaterialScenePreparation3D::New(PreparedMaterialScene3D {
-        source,
-        view,
-        origin,
-        extent,
-        packed,
-        queue: gpu.queue.clone(),
-        write_scene: true,
-        write_shadows,
-        retained: Some(retained),
-        uploads: Some(uploads),
-        capacity_slot: None,
-        upload_bytes: p.max_upload_bytes_per_frame - upload.remaining_bytes(),
-    }))
+    let result = (|| -> Result<MaterialScenePreparation3D, PbrError3D> {
+        let (retained, uploads) = built?;
+        #[cfg(any(test, feature = "test-harness"))]
+        if let Some(t) = timing {
+            t.branch = "New";
+            t.uniform_buffers += 3;
+            t.geometry_plans += uploads.geometry.len() + uploads.legacy_geometry.len();
+            t.texture_plans += uploads.textures.len();
+            t.mip_plans += uploads.mips.len();
+        }
+        let write_shadows = retained.direct.as_ref().is_some_and(|d| {
+            !current
+                .and_then(PreparedMaterialScene3D::retained)
+                .and_then(|s| s.direct.as_ref())
+                .is_some_and(|old| Arc::ptr_eq(d, old))
+        });
+        Ok(MaterialScenePreparation3D::New(PreparedMaterialScene3D {
+            source,
+            view,
+            origin,
+            extent,
+            packed,
+            queue: gpu.queue.clone(),
+            write_scene: true,
+            write_shadows,
+            retained: Some(retained),
+            uploads: Some(uploads),
+            capacity_slot: None,
+            upload_bytes: p.max_upload_bytes_per_frame - upload.remaining_bytes(),
+        }))
+    })();
+    #[cfg(target_arch = "wasm32")]
+    return preparation.defer(
+        context,
+        super::gpu_preparation::CandidateKey3D::Material,
+        result,
+        super::gpu_preparation::ScopeCompletion3D::Pair(validation, allocation),
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    result
 }
 
 impl PbrProgram3D {
-    pub(super) fn shadow_pipeline(
+    #[cfg(target_arch = "wasm32")]
+    fn prepared_pipeline(
         &self,
-        context: &Context3D,
+        samples: u32,
+        cull: bool,
+        observe: bool,
+    ) -> Result<Arc<PbrPipeline3D>, super::pbr::PbrError3D> {
+        self.pipelines
+            .lock()
+            .map_err(|_| super::pbr::PbrError3D::Lock("PBR pipeline cache"))?
+            .get(&(samples, cull, observe))
+            .cloned()
+            .ok_or(super::pbr::PbrError3D::Association(
+                "PBR pipeline missing after preparation",
+            ))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn prepared_shadow_pipeline(
+        &self,
         cull: bool,
         cube: bool,
     ) -> Result<Arc<PbrPipeline3D>, super::pbr::PbrError3D> {
+        self.shadow_pipelines
+            .lock()
+            .map_err(|_| super::pbr::PbrError3D::Lock("shadow pipeline cache"))?
+            .get(&(cull, cube))
+            .cloned()
+            .ok_or(super::pbr::PbrError3D::Association(
+                "shadow pipeline missing after preparation",
+            ))
+    }
+
+    pub(super) fn shadow_pipeline(
+        self: &Arc<Self>,
+        context: &Context3D,
+        cull: bool,
+        cube: bool,
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<PbrPipeline3D>> {
         use super::pbr::PbrError3D;
         let mut cache = self
             .shadow_pipelines
@@ -4873,7 +5068,31 @@ impl PbrProgram3D {
         if let Some(p) = cache.get(&(cull, cube)) {
             return Ok(p.clone());
         }
-        let mut charge = context
+        #[cfg(target_arch = "wasm32")]
+        let (preparation, candidate_key) = {
+            use super::gpu_preparation::{CandidateKey3D, CandidatePoll3D};
+            let preparation = context
+                .gpu_preparation
+                .as_ref()
+                .ok_or(PbrError3D::Association("PBR GPU preparation owner absent"))?;
+            let key = CandidateKey3D::Shadow {
+                profile: self.profile.0,
+                sampling: u8::from(self.sampling == SamplingFamily3D::V2),
+                object_bytes: self.object_binding_bytes,
+                cull,
+                cube,
+            };
+            if let CandidatePoll3D::Ready(mut pending) =
+                preparation.poll::<PendingPbrPipeline3D>(context, key)?
+            {
+                pending.pipeline._charge.commit();
+                let pipeline = Arc::new(pending.pipeline);
+                cache.insert((cull, cube), pipeline.clone());
+                return Ok(pipeline);
+            }
+            (preparation, key)
+        };
+        let charge = context
             .raster_gpu()?
             .reserve_controlled_pipeline(context.limits().policy.max_pipeline_variants)?;
         let gpu = context.gpu_resources()?;
@@ -4935,24 +5154,43 @@ impl PbrProgram3D {
                 multiview_mask: None,
                 cache: None,
             });
-        if let Some(e) = pollster::block_on(validation_scope.pop()) {
-            return Err(PbrError3D::Shader(e.to_string()));
+        let validation = validation_scope.pop();
+        #[cfg(target_arch = "wasm32")]
+        return preparation.defer(
+            context,
+            candidate_key,
+            PendingPbrPipeline3D {
+                pipeline: PbrPipeline3D {
+                    pipeline,
+                    _charge: charge,
+                },
+                _program: self.clone(),
+            },
+            super::gpu_preparation::ScopeCompletion3D::One(validation),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(e) = pollster::block_on(validation) {
+            return Err((PbrError3D::Shader(e.to_string())).into());
         }
-        charge.commit();
-        let p = Arc::new(PbrPipeline3D {
-            pipeline,
-            _charge: charge,
-        });
-        cache.insert((cull, cube), p.clone());
-        Ok(p)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut charge = charge;
+            charge.commit();
+            let p = Arc::new(PbrPipeline3D {
+                pipeline,
+                _charge: charge,
+            });
+            cache.insert((cull, cube), p.clone());
+            Ok(p)
+        }
     }
-    pub(super) fn new(context: &Context3D) -> Result<Self, super::pbr::PbrError3D> {
+    pub(super) fn new(context: &Context3D) -> super::gpu_preparation::PbrGpuResult3D<Arc<Self>> {
         Self::new_family(context, false)
     }
     pub(super) fn new_family(
         context: &Context3D,
         direct_enabled: bool,
-    ) -> Result<Self, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<Self>> {
         Self::new_profile(
             context,
             super::indirect::Presence3D(u8::from(direct_enabled)),
@@ -4961,14 +5199,14 @@ impl PbrProgram3D {
     pub(super) fn new_profile(
         context: &Context3D,
         profile: super::indirect::Presence3D,
-    ) -> Result<Self, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<Self>> {
         Self::new_sampling_profile(context, profile, SamplingFamily3D::V1)
     }
     pub(super) fn new_sampling_profile(
         context: &Context3D,
         profile: super::indirect::Presence3D,
         sampling: SamplingFamily3D,
-    ) -> Result<Self, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<Self>> {
         Self::new_object_profile(context, profile, sampling, 112)
     }
 
@@ -4976,7 +5214,7 @@ impl PbrProgram3D {
         context: &Context3D,
         profile: super::indirect::Presence3D,
         sampling: SamplingFamily3D,
-    ) -> Result<Self, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<Self>> {
         Self::new_object_profile(context, profile, sampling, 128)
     }
 
@@ -4985,10 +5223,29 @@ impl PbrProgram3D {
         profile: super::indirect::Presence3D,
         sampling: SamplingFamily3D,
         object_binding_bytes: u64,
-    ) -> Result<Self, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<Self>> {
         use super::pbr::PbrError3D;
+        #[cfg(target_arch = "wasm32")]
+        let (preparation, candidate_key) = {
+            use super::gpu_preparation::{CandidateKey3D, CandidatePoll3D};
+            let preparation = context
+                .gpu_preparation
+                .as_ref()
+                .ok_or(PbrError3D::Association("PBR GPU preparation owner absent"))?;
+            let key = CandidateKey3D::Program {
+                profile: profile.0,
+                sampling: u8::from(sampling == SamplingFamily3D::V2),
+                object_bytes: object_binding_bytes,
+            };
+            if let CandidatePoll3D::Ready(program) =
+                preparation.poll_shared::<Self>(context, key)?
+            {
+                return Ok(program);
+            }
+            (preparation, key)
+        };
         if profile.0 >= 8 {
-            return Err(PbrError3D::Association("unknown controlled D/E/G profile"));
+            return Err((PbrError3D::Association("unknown controlled D/E/G profile")).into());
         }
         let direct_enabled = profile.direct();
         let gpu = context.gpu_resources()?;
@@ -5001,11 +5258,13 @@ impl PbrProgram3D {
             || limits.max_uniform_buffer_binding_size < object_binding_bytes
             || limits.max_vertex_attributes < 5
             || limits.max_vertex_buffer_array_stride < 52
-            || limits.max_inter_stage_shader_variables < 6 // Five locations and front-facing.
+            || limits.max_inter_stage_shader_variables < 6
+        // Five locations and front-facing.
         {
-            return Err(PbrError3D::Association(
+            return Err((PbrError3D::Association(
                 "Device cannot admit exact R024 ABI/stage limits",
-            ));
+            ))
+            .into());
         }
         if direct_enabled
             && (limits.max_bind_groups < 4
@@ -5019,10 +5278,10 @@ impl PbrProgram3D {
                 || limits.max_texture_array_layers < 24
                 || limits.max_texture_dimension_2d < 1024)
         {
-            return Err(PbrError3D::Direct {
+            return Err((PbrError3D::Direct {
                 field: "Device limits",
                 cause: "exact four-group/six-attribute/19-component/depth-array R025 family unsupported",
-            });
+            }).into());
         }
         if profile.indirect()
             && (limits.max_bind_groups < 4
@@ -5035,10 +5294,11 @@ impl PbrProgram3D {
                     && (limits.max_texture_array_layers < 48
                         || limits.max_texture_dimension_2d < 128)))
         {
-            return Err(PbrError3D::Indirect {
+            return Err((PbrError3D::Indirect {
                 field: "Device limits",
                 cause: "exact selected four-group E/G stage/array layout unavailable",
-            });
+            })
+            .into());
         }
         let reservation = context.reserve_controlled_shader_module()?;
         let source = super::object_reveal::controlled_material_source(
@@ -5249,12 +5509,13 @@ impl PbrProgram3D {
                     bind_group_layouts: &observation_groups,
                     immediate_size: 0,
                 });
-        let validation = pollster::block_on(validation_scope.pop());
-        let allocation = pollster::block_on(allocation_scope.pop());
-        if let Some(error) = validation.or(allocation) {
-            return Err(PbrError3D::Shader(error.to_string()));
+        let validation = validation_scope.pop();
+        let allocation = allocation_scope.pop();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(error) = pollster::block_on(validation).or(pollster::block_on(allocation)) {
+            return Err((PbrError3D::Shader(error.to_string())).into());
         }
-        Ok(Self {
+        let program = Arc::new(Self {
             module,
             layouts,
             layout,
@@ -5263,7 +5524,7 @@ impl PbrProgram3D {
             color_layout,
             profile,
             sampling,
-            #[cfg(test)]
+            #[cfg(any(test, target_arch = "wasm32"))]
             object_binding_bytes,
             shadow_layout,
             shadow_pipelines: Mutex::new(HashMap::new()),
@@ -5272,23 +5533,32 @@ impl PbrProgram3D {
             observation_layout,
             #[cfg(test)]
             observation_pipeline_layout,
-        })
+        });
+        #[cfg(target_arch = "wasm32")]
+        return preparation.defer(
+            context,
+            candidate_key,
+            program,
+            super::gpu_preparation::ScopeCompletion3D::Pair(validation, allocation),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        Ok(program)
     }
 
     pub(super) fn pipeline(
-        &self,
+        self: &Arc<Self>,
         context: &Context3D,
         samples: u32,
         cull: bool,
         observe: bool,
-    ) -> Result<Arc<PbrPipeline3D>, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<PbrPipeline3D>> {
         use super::pbr::PbrError3D;
         if !matches!(samples, 1 | 4) {
-            return Err(PbrError3D::Association("PBR sample count must be1 or4"));
+            return Err((PbrError3D::Association("PBR sample count must be1 or4")).into());
         }
         #[cfg(not(test))]
         if observe {
-            return Err(PbrError3D::Association("numeric observation is test-only"));
+            return Err((PbrError3D::Association("numeric observation is test-only")).into());
         }
         let mut pipelines = self
             .pipelines
@@ -5297,7 +5567,32 @@ impl PbrProgram3D {
         if let Some(p) = pipelines.get(&(samples, cull, observe)) {
             return Ok(p.clone());
         }
-        let mut charge = context
+        #[cfg(target_arch = "wasm32")]
+        let (preparation, candidate_key) = {
+            use super::gpu_preparation::{CandidateKey3D, CandidatePoll3D};
+            let preparation = context
+                .gpu_preparation
+                .as_ref()
+                .ok_or(PbrError3D::Association("PBR GPU preparation owner absent"))?;
+            let key = CandidateKey3D::Pipeline {
+                profile: self.profile.0,
+                sampling: u8::from(self.sampling == SamplingFamily3D::V2),
+                object_bytes: self.object_binding_bytes,
+                samples,
+                cull,
+                observe,
+            };
+            if let CandidatePoll3D::Ready(mut pending) =
+                preparation.poll::<PendingPbrPipeline3D>(context, key)?
+            {
+                pending.pipeline._charge.commit();
+                let pipeline = Arc::new(pending.pipeline);
+                pipelines.insert((samples, cull, observe), pipeline.clone());
+                return Ok(pipeline);
+            }
+            (preparation, key)
+        };
+        let charge = context
             .raster_gpu()?
             .reserve_controlled_pipeline(context.limits().policy.max_pipeline_variants)?;
         let gpu = context.gpu_resources()?;
@@ -5339,9 +5634,10 @@ impl PbrProgram3D {
         if self.profile.indirect() {
             entry = "indirect_fragment";
             if observe {
-                return Err(PbrError3D::Association(
+                return Err((PbrError3D::Association(
                     "R026 uses its separate exact numeric probe, not the R024 observation ABI",
-                ));
+                ))
+                .into());
             }
         }
         #[cfg(test)]
@@ -5408,16 +5704,35 @@ impl PbrProgram3D {
                 multiview_mask: None,
                 cache: None,
             });
-        if let Some(e) = pollster::block_on(validation_scope.pop()) {
-            return Err(PbrError3D::Shader(e.to_string()));
+        let validation = validation_scope.pop();
+        #[cfg(target_arch = "wasm32")]
+        return preparation.defer(
+            context,
+            candidate_key,
+            PendingPbrPipeline3D {
+                pipeline: PbrPipeline3D {
+                    pipeline,
+                    _charge: charge,
+                },
+                _program: self.clone(),
+            },
+            super::gpu_preparation::ScopeCompletion3D::One(validation),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(e) = pollster::block_on(validation) {
+            return Err((PbrError3D::Shader(e.to_string())).into());
         }
-        charge.commit();
-        let result = Arc::new(PbrPipeline3D {
-            pipeline,
-            _charge: charge,
-        });
-        pipelines.insert((samples, cull, observe), result.clone());
-        Ok(result)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut charge = charge;
+            charge.commit();
+            let result = Arc::new(PbrPipeline3D {
+                pipeline,
+                _charge: charge,
+            });
+            pipelines.insert((samples, cull, observe), result.clone());
+            Ok(result)
+        }
     }
 }
 
@@ -6503,7 +6818,7 @@ pub(crate) fn material_brdf_probe_for_test(
             .lock()
             .map_err(|_| PbrError3D::Lock("PBR fixed program"))?;
         if guard.is_none() {
-            *guard = Some(Arc::new(PbrProgram3D::new(context)?));
+            *guard = Some(PbrProgram3D::new(context)?);
         }
         guard.as_ref().unwrap().clone()
     };

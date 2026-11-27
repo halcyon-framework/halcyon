@@ -808,7 +808,25 @@ impl Drop for Viewport3DTargetResources {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+struct BrowserMaterialPreparation3D {
+    work: Arc<super::gpu_preparation::GpuPreparation3D>,
+    serial: Viewport3DRequestSerial,
+    observed_revision: u64,
+    origin: WorldPoint3,
+    prepared: Option<super::raster::MaterialScenePreparation3D>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for BrowserMaterialPreparation3D {
+    fn drop(&mut self) {
+        self.work.retire();
+    }
+}
+
 struct Viewport3DTargetState {
+    #[cfg(target_arch = "wasm32")]
+    browser_material_preparation: Option<BrowserMaterialPreparation3D>,
     spatial_hud: Option<Arc<super::spatial_hud::PreparedHud3D>>,
     spatial_hud_published: bool,
     spatial_hud_failure: Option<super::PbrSourceError3D>,
@@ -840,6 +858,8 @@ struct Viewport3DTargetState {
 impl Viewport3DTargetState {
     fn new(render_origin: WorldPoint3) -> Self {
         Self {
+            #[cfg(target_arch = "wasm32")]
+            browser_material_preparation: None,
             spatial_hud: None,
             spatial_hud_published: false,
             spatial_hud_failure: None,
@@ -932,6 +952,8 @@ impl Viewport3DTargetState {
     }
 
     fn retire_incompatible(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        drop(self.browser_material_preparation.take());
         self.spatial_hud = None;
         self.spatial_hud_failure = None;
         self.outline = None;
@@ -990,6 +1012,8 @@ impl Viewport3DTargetState {
     }
 
     fn mark_terminal(&mut self, failure: GpuDeviceFailure) {
+        #[cfg(target_arch = "wasm32")]
+        drop(self.browser_material_preparation.take());
         self.spatial_hud = None;
         self.spatial_hud_failure = None;
         self.terminal_publication_withdrawal_pending |= self.outline.is_some();
@@ -1018,6 +1042,8 @@ impl Viewport3DTargetState {
     }
 
     fn retire(&mut self, state: Viewport3DLifecycleState) {
+        #[cfg(target_arch = "wasm32")]
+        drop(self.browser_material_preparation.take());
         self.spatial_hud = None;
         self.spatial_hud_failure = None;
         self.outline = None;
@@ -3263,6 +3289,27 @@ impl Viewport3D {
             let Some(target) = self.targets.get_mut(&surface_id) else {
                 return CustomRenderPreparationOutcome::default();
             };
+            #[cfg(target_arch = "wasm32")]
+            if target.browser_material_preparation.is_some() {
+                let same_metrics = target.last_metrics.is_some_and(|old| {
+                    old.surface_id == metrics.surface_id
+                        && old.final_logical_rect == metrics.final_logical_rect
+                        && old.final_logical_viewport == metrics.final_logical_viewport
+                        && old.target_logical_extent == metrics.target_logical_extent
+                        && old.scale_factor.to_bits() == metrics.scale_factor.to_bits()
+                        && old.target_physical_extent == metrics.target_physical_extent
+                        && old.activity == metrics.activity
+                });
+                if !same_metrics
+                    || !target.requested_matches(key, &self.requested)
+                    || target.last_reveal_attempt_revision != self.reveal_frame_revision
+                    || target.last_outline_attempt_revision != self.outline_revision
+                    || target.last_spatial_hud_attempt != self.spatial_hud_epoch
+                {
+                    drop(target.browser_material_preparation.take());
+                    target.status.requested = None;
+                }
+            }
             target.last_metrics = Some(*metrics);
             if target.key.is_some_and(|current| current != key) {
                 publication_changed = target.sampleable_texture_id().is_some();
@@ -3321,6 +3368,10 @@ impl Viewport3D {
             .targets
             .get(&surface_id)
             .map(|target| {
+                #[cfg(target_arch = "wasm32")]
+                if let Some(pending) = &target.browser_material_preparation {
+                    return pending.work.revision() != pending.observed_revision;
+                }
                 !target.requested_matches(key, &self.requested)
                     || (self.spatial_hud_typography.is_some()
                         && self.spatial_hud_request.is_some()
@@ -3399,7 +3450,16 @@ impl Viewport3D {
                 .map_or(0, |pool| pool.ready_revision());
         }
 
-        let request_serial = match self.allocate_request_serial() {
+        #[cfg(target_arch = "wasm32")]
+        let resumed_serial = self
+            .targets
+            .get(&surface_id)
+            .and_then(|t| t.browser_material_preparation.as_ref())
+            .map(|p| p.serial);
+        #[cfg(not(target_arch = "wasm32"))]
+        let resumed_serial = None;
+        let request_serial = match resumed_serial.map_or_else(|| self.allocate_request_serial(), Ok)
+        {
             Ok(serial) => serial,
             Err(_) => {
                 #[cfg(feature = "render-audit")]
@@ -3411,7 +3471,10 @@ impl Viewport3D {
         let Some(requested_tuple) = self.requested_tuple(request_serial, key) else {
             return self.preparation_outcome_for(surface_id, publication_changed);
         };
-        let _pending_request = match self.context.reserve_pending_request() {
+        let mut _pending_request = match resumed_serial.map_or_else(
+            || self.context.reserve_pending_request().map(Some),
+            |_| Ok(None),
+        ) {
             Ok(lease) => lease,
             Err(error) => {
                 if let Some(target) = self.targets.get_mut(&surface_id) {
@@ -3431,16 +3494,57 @@ impl Viewport3D {
             target.status.requested = Some(requested_tuple);
             target.status.failure = None;
             target.status.state = Viewport3DLifecycleState::ReadyWithoutCommit;
+            #[cfg(target_arch = "wasm32")]
+            if matches!(self.requested.source, RequestedSource3D::Material(_))
+                && target.has_sampleable_front()
+            {
+                // This state still describes the old committed tuple. The new
+                // request remains distinct and has no fabricated failure/front.
+                target.status.state = Viewport3DLifecycleState::Committed;
+            }
         }
         let _pending_publication = match self.context.reserve_pending_publication() {
             Ok(lease) => lease,
             Err(error) => {
                 if let Some(target) = self.targets.get_mut(&surface_id) {
+                    #[cfg(target_arch = "wasm32")]
+                    drop(target.browser_material_preparation.take());
                     target.record_failure(request_serial, error.into());
                 }
                 return self.preparation_outcome_for(surface_id, publication_changed);
             }
         };
+        #[cfg(target_arch = "wasm32")]
+        if matches!(self.requested.source, RequestedSource3D::Material(_)) {
+            let target = self
+                .targets
+                .get_mut(&surface_id)
+                .expect("requested material target");
+            if target.browser_material_preparation.is_none() {
+                let work = match super::gpu_preparation::GpuPreparation3D::new(
+                    &self.context,
+                    _pending_request.take().expect("new request reservation"),
+                ) {
+                    Ok(work) => work,
+                    Err(error) => {
+                        target.record_hdr_failure(
+                            request_serial,
+                            super::gpu_preparation::hdr_refusal(error),
+                        );
+                        return self.preparation_outcome_for(surface_id, publication_changed);
+                    }
+                };
+                target.browser_material_preparation = Some(BrowserMaterialPreparation3D {
+                    work,
+                    serial: request_serial,
+                    observed_revision: 0,
+                    origin: target.render_origin,
+                    prepared: None,
+                });
+            }
+            let pending = target.browser_material_preparation.as_mut().unwrap();
+            pending.observed_revision = pending.work.revision();
+        }
         if let Some(source) = self.requested.source.hdr_source().cloned() {
             #[cfg(any(test, feature = "test-harness"))]
             let render_start = self.pbr_timing.as_ref().map(|_| std::time::Instant::now());
@@ -3454,10 +3558,11 @@ impl Viewport3D {
                     .get_mut(&surface_id)
                     .expect("requested target")
                     .material_failure = Some(error.clone());
-                Err(match error {
+                Err((match error {
                     super::pbr::PbrError3D::Context(error) => HdrError3D::Context(error),
                     error => HdrError3D::Shader(error.to_string()),
                 })
+                .into())
             } else {
                 self.render_private_hdr_target(surface_id, physical_render_extent, &source)
             };
@@ -3487,6 +3592,8 @@ impl Viewport3D {
                     target.status.failure = None;
                     target.hdr_failure = None;
                     target.status.state = Viewport3DLifecycleState::Committed;
+                    #[cfg(target_arch = "wasm32")]
+                    drop(target.browser_material_preparation.take());
                     if let Some(reveal) = self.object_reveal.as_mut() {
                         reveal.target_ready = true;
                     }
@@ -3586,10 +3693,15 @@ impl Viewport3D {
                     return outcome;
                 }
                 Err(error) => {
+                    let Some(error) = super::gpu_preparation::hdr_failure(error) else {
+                        return self.preparation_outcome_for(surface_id, publication_changed);
+                    };
                     let target = self
                         .targets
                         .get_mut(&surface_id)
                         .expect("requested HDR target");
+                    #[cfg(target_arch = "wasm32")]
+                    drop(target.browser_material_preparation.take());
                     target.record_hdr_failure(request_serial, error);
                     if target.material_failure.is_some() {
                         // Observe capacity after candidate rollback so its own
@@ -3776,7 +3888,7 @@ impl Viewport3D {
         surface: SurfaceId,
         extent: PhysicalExtent,
         source: &HdrSource3D,
-    ) -> Result<(), HdrError3D> {
+    ) -> super::gpu_preparation::HdrGpuResult3D<()> {
         source.exposure()?;
         // The internally admitted material writer is real production code. The
         // standalone radiance fixture remains test-only and is never a fallback.
@@ -3786,9 +3898,7 @@ impl Viewport3D {
         #[cfg(not(test))]
         {
             let _ = (surface, extent);
-            Err(HdrError3D::Source(
-                "standalone HDR fixture has no production writer",
-            ))
+            Err(HdrError3D::Source("standalone HDR fixture has no production writer").into())
         }
         #[cfg(test)]
         {
@@ -3836,8 +3946,20 @@ impl Viewport3D {
         surface: SurfaceId,
         extent: PhysicalExtent,
         source: super::pbr::ValidatedMaterialSceneSource3D,
-    ) -> Result<(), HdrError3D> {
+    ) -> super::gpu_preparation::HdrGpuResult3D<()> {
         use super::pbr::PbrError3D;
+        #[cfg(not(target_arch = "wasm32"))]
+        let context = &self.context;
+        #[cfg(target_arch = "wasm32")]
+        let context = {
+            let mut context = self.context.as_ref().clone();
+            context.gpu_preparation = self
+                .targets
+                .get(&surface)
+                .and_then(|target| target.browser_material_preparation.as_ref())
+                .map(|pending| pending.work.clone());
+            context
+        };
         let wants_spatial_hud = self.spatial_hud_typography.is_some()
             && self.presence_mounted
             && self.presence.is_none()
@@ -3876,10 +3998,10 @@ impl Viewport3D {
             previous.pin = None;
         }
         if target.hdr.as_ref().is_some_and(|hdr| !hdr.back_writable()) {
-            return Err(HdrError3D::PinnedFront);
+            return Err((HdrError3D::PinnedFront).into());
         }
         let mut presence_refusal = None;
-        let result = (|| -> Result<(), PbrError3D> {
+        let result = (|| -> super::gpu_preparation::PbrGpuResult3D<()> {
             let mut presence_active = None;
             if let Some(private) = target.presence.as_ref().and_then(|p| p.gpu.as_ref()) {
                 let p = u64::from(extent.width) * u64::from(extent.height);
@@ -3896,7 +4018,7 @@ impl Viewport3D {
                     .ok_or(PbrError3D::Association(
                         "combined HAL381 complete target byte overflow",
                     ))?;
-                let maximum = self.context.limits().policy.max_single_target_attachment_bytes;
+                let maximum = context.limits().policy.max_single_target_attachment_bytes;
                 presence_active = Some(private.active_credit());
                 if bytes > maximum {
                     // Refuse the optional transition before preparing the original PBR
@@ -3915,7 +4037,7 @@ impl Viewport3D {
             #[cfg(any(test, feature = "test-harness"))]
             let coarse_validation_start = coarse.as_ref().map(|_| std::time::Instant::now());
             let validation = super::pbr::validate_material_scene_source(
-                &self.context,
+                &context,
                 source.source(),
                 Some(&source),
             );
@@ -3929,7 +4051,7 @@ impl Viewport3D {
             }
             validation?;
             if let Some(error) = self.object_reveal.as_ref().and_then(|r| r.failure.as_ref()) {
-                return Err(error.clone());
+                return Err((error.clone()).into());
             }
             let reveal_frame = self
                 .object_reveal
@@ -3942,7 +4064,7 @@ impl Viewport3D {
                     })
                 });
             if source.samples != self.requested.sample_count.value() {
-                return Err(PbrError3D::Association("source/target sample mismatch"));
+                return Err((PbrError3D::Association("source/target sample mismatch")).into());
             }
             let committed_predecessor = slot_target
                 .filter(|_| matches!(self.pbr_request_intent, PbrSceneRequestIntent3D::Successor))
@@ -3952,7 +4074,14 @@ impl Viewport3D {
                     })
                 })
                 .map(MaterialViewport3DTuple::source);
+            #[cfg(not(target_arch = "wasm32"))]
             let mut origin = target.render_origin;
+            #[cfg(target_arch = "wasm32")]
+            let mut origin = target
+                .browser_material_preparation
+                .as_ref()
+                .expect("current browser preparation")
+                .origin;
             #[cfg_attr(not(any(test, feature = "test-harness")), allow(unused_mut))]
             let mut prepare = |origin| {
                 #[cfg(any(test, feature = "test-harness"))]
@@ -3960,7 +4089,7 @@ impl Viewport3D {
                 #[cfg(any(test, feature = "test-harness"))]
                 let coarse_raster_start = coarse.as_ref().map(|_| std::time::Instant::now());
                 let result = super::raster::prepare_material_scene_with_capacity(
-                    &self.context,
+                    &context,
                     source.source().clone(),
                     self.requested.view,
                     origin,
@@ -3992,16 +4121,47 @@ impl Viewport3D {
                 }
                 result
             };
-            let mut prepared = match prepare(origin) {
-                Err(PbrError3D::Math(
-                    super::Math3DError::NonRepresentableRenderRelativeTranslation
-                    | super::Math3DError::NonRepresentableViewTransform,
-                )) if origin != self.requested.view.pose().translation() => {
-                    origin = self.requested.view.pose().translation();
-                    prepare(origin)?
-                }
-                result => result?,
-            };
+            #[cfg(target_arch = "wasm32")]
+            let saved = target
+                .browser_material_preparation
+                .as_mut()
+                .and_then(|pending| pending.prepared.take());
+            #[cfg(not(target_arch = "wasm32"))]
+            let saved = None;
+            let mut prepared =
+                if let Some(prepared) = saved {
+                    prepared
+                } else {
+                    let first = prepare(origin);
+                    let retry =
+                        first
+                            .as_ref()
+                            .err()
+                            .and_then(super::gpu_preparation::pbr_failure_ref)
+                            .is_some_and(|e| {
+                                matches!(
+                                    e,
+                                    PbrError3D::Math(
+                                        super::Math3DError::NonRepresentableRenderRelativeTranslation
+                                            | super::Math3DError::NonRepresentableViewTransform,
+                                    )
+                                )
+                            });
+                    if retry && origin != self.requested.view.pose().translation() {
+                        origin = self.requested.view.pose().translation();
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            target
+                                .browser_material_preparation
+                                .as_mut()
+                                .expect("current browser preparation")
+                                .origin = origin;
+                        }
+                        prepare(origin)?
+                    } else {
+                        first?
+                    }
+                };
             // Source/geometry/material validation and all of their reservations
             // precede writes. The existing HDR owner performs its own complete
             // attachment/tone reservation before invoking this scene writer.
@@ -4012,25 +4172,32 @@ impl Viewport3D {
             if target.hdr.is_none() {
                 #[cfg(any(test, feature = "test-harness"))]
                 let allocation_start = timing.as_ref().map(|_| std::time::Instant::now());
-                target.hdr = Some(
-                    HdrOutput3D::new_with_presence(
-                        &self.context,
-                        extent.width,
-                        extent.height,
-                        source.samples,
-                        &source.hdr,
-                        presence_active,
-                        target
-                            .presence
-                            .as_ref()
-                            .and_then(|p| p.gpu.as_ref())
-                            .map_or(0, |gpu| gpu.attachment_bytes),
-                    )
-                    .map_err(|e| match e {
-                        HdrError3D::Context(e) => PbrError3D::Context(e),
-                        e => PbrError3D::Shader(e.to_string()),
-                    })?,
+                let hdr = HdrOutput3D::new_with_presence(
+                    &context,
+                    extent.width,
+                    extent.height,
+                    source.samples,
+                    &source.hdr,
+                    presence_active,
+                    target
+                        .presence
+                        .as_ref()
+                        .and_then(|p| p.gpu.as_ref())
+                        .map_or(0, |gpu| gpu.attachment_bytes),
                 );
+                #[cfg(target_arch = "wasm32")]
+                if matches!(
+                    &hdr,
+                    Err(super::gpu_preparation::PreparationError3D::Pending)
+                ) {
+                    target
+                        .browser_material_preparation
+                        .as_mut()
+                        .expect("current browser preparation")
+                        .prepared = Some(prepared);
+                    return Err(super::gpu_preparation::PreparationError3D::Pending);
+                }
+                target.hdr = Some(hdr.map_err(super::gpu_preparation::hdr_to_pbr)?);
                 #[cfg(any(test, feature = "test-harness"))]
                 if let (Some(t), Some(start)) = (timing.as_deref_mut(), allocation_start) {
                     t.hdr_allocation += start.elapsed();
@@ -4042,7 +4209,7 @@ impl Viewport3D {
             if let Some(request) = outline_request.as_ref() {
                 match prepared.outline_target(
                     target.material.as_ref(),
-                    &self.context,
+                    &context,
                     &request.selection,
                     (extent.width, extent.height),
                     previous_outline.as_ref().map(|p| &p.gpu),
@@ -4082,10 +4249,10 @@ impl Viewport3D {
                         .is_none_or(|p| p.samples != source.samples)
                     {
                         self.spatial_hud_program = Some(Arc::new(
-                            super::spatial_hud::HudProgram3D::new(&self.context, source.samples)?,
+                            super::spatial_hud::HudProgram3D::new(&context, source.samples)?,
                         ));
                     }
-                    hdr.qualify_hud_depth(&self.context, source.direct.is_some())
+                    hdr.qualify_hud_depth(&context, source.direct.is_some())
                 })();
                 match depth {
                     Ok(()) => {
@@ -4099,7 +4266,7 @@ impl Viewport3D {
             }
             if slot_target.is_some() && reveal_frame.is_none() {
                 prepared.seed_direct_slots(
-                    &self.context,
+                    &context,
                     #[cfg(any(test, feature = "test-harness"))]
                     timing.as_deref_mut().map(|t| &mut t.raster),
                 );
@@ -4129,10 +4296,7 @@ impl Viewport3D {
                     }
                 })
             };
-            rendered.map_err(|e| match e {
-                HdrError3D::Context(e) => PbrError3D::Context(e),
-                e => PbrError3D::Shader(e.to_string()),
-            })?;
+            rendered.map_err(super::gpu_preparation::hdr_to_pbr)?;
             #[cfg(any(test, feature = "test-harness"))]
             if let (Some(t), Some(start)) = (timing.as_deref_mut(), hdr_start) {
                 t.hdr_total += start.elapsed();
@@ -4188,18 +4352,25 @@ impl Viewport3D {
                 audit::record_encode();
                 Ok(())
             }
+            #[cfg(target_arch = "wasm32")]
+            Err(super::gpu_preparation::PreparationError3D::Pending) => {
+                target.material_failure = None;
+                target.hdr_failure = None;
+                Err(super::gpu_preparation::PreparationError3D::Pending)
+            }
             Err(e) => {
+                #[cfg(target_arch = "wasm32")]
+                let e = match e {
+                    super::gpu_preparation::PreparationError3D::Failed(e) => e,
+                    super::gpu_preparation::PreparationError3D::Pending => {
+                        return Err(super::gpu_preparation::PreparationError3D::Pending);
+                    }
+                };
                 if target.hdr.as_ref().is_some_and(|hdr| !hdr.is_live()) {
                     drop(target.material_capacity.take());
                 }
                 target.material_failure = Some(e.clone());
-                Err(match e {
-                    PbrError3D::Context(e) => HdrError3D::Context(e),
-                    PbrError3D::Resource(super::context::ControlledResourceError3D::Context(e)) => {
-                        HdrError3D::Context(e)
-                    }
-                    e => HdrError3D::Shader(e.to_string()),
-                })
+                Err(super::gpu_preparation::hdr_refusal(e).into())
             }
         };
         if let Some(error) = presence_refusal {

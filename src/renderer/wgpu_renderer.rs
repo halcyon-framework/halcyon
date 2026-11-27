@@ -887,9 +887,18 @@ pub struct GpuResources {
     /// It is not target authority and must not size conforming custom resources;
     /// SPEC-HAL-266A preparation supplies renderer-owned per-surface metrics.
     pub scale_factor: f32,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) custom_render_preparation_wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl GpuResources {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn wake_custom_render_preparation(&self) {
+        if let Some(wake) = &self.custom_render_preparation_wake {
+            wake();
+        }
+    }
+
     pub(crate) fn private_hdr_owner_live(&self) -> bool {
         let _removals = self
             .pending_unregistrations
@@ -5367,6 +5376,8 @@ impl WgpuRenderer {
                 .clone(),
             image_admission: self.image_admission.get_or_init(Default::default).clone(),
             scale_factor: 1.0,
+            #[cfg(target_arch = "wasm32")]
+            custom_render_preparation_wake: None,
         }
     }
 

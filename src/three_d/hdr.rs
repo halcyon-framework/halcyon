@@ -329,14 +329,30 @@ pub(crate) struct ToneProgram3D {
 }
 
 impl ToneProgram3D {
-    pub(crate) fn new(context: &Context3D, samples: u32) -> Result<Self, HdrError3D> {
+    pub(crate) fn new(
+        context: &Context3D,
+        samples: u32,
+    ) -> super::gpu_preparation::HdrGpuResult3D<Self> {
+        #[cfg(target_arch = "wasm32")]
+        let preparation = context.gpu_preparation.as_ref();
+        #[cfg(target_arch = "wasm32")]
+        if let Some(preparation) = preparation {
+            use super::gpu_preparation::{CandidateKey3D, CandidatePoll3D};
+            if let CandidatePoll3D::Ready(mut program) = preparation
+                .poll::<Self>(context, CandidateKey3D::Tone(samples))
+                .map_err(super::gpu_preparation::pbr_to_hdr)?
+            {
+                program._pipeline_residency.commit();
+                return Ok(program);
+            }
+        }
         if !matches!(samples, 1 | 4) {
-            return Err(HdrError3D::Target("scene sample count must be 1 or 4"));
+            return Err((HdrError3D::Target("scene sample count must be 1 or 4")).into());
         }
         let gpu = context.gpu_resources()?;
         scene_capabilities(&gpu.device, samples)?;
         if !gpu.private_hdr_owner_live() {
-            return Err(HdrError3D::Target("renderer retired"));
+            return Err((HdrError3D::Target("renderer retired")).into());
         }
         let raster = context.raster_gpu()?;
         let mut pipeline_residency =
@@ -449,8 +465,28 @@ impl ToneProgram3D {
                 multiview_mask: None,
                 cache: None,
             });
-        if let Some(error) = pollster::block_on(validation_scope.pop()) {
-            return Err(HdrError3D::Shader(error.to_string()));
+        let validation = validation_scope.pop();
+        #[cfg(target_arch = "wasm32")]
+        if let Some(preparation) = preparation {
+            let program = Self {
+                layout,
+                pipeline,
+                _module: module,
+                _module_residency: reservation.commit_one(),
+                _pipeline_residency: pipeline_residency,
+                samples,
+            };
+            return preparation
+                .defer(
+                    context,
+                    super::gpu_preparation::CandidateKey3D::Tone(samples),
+                    program,
+                    super::gpu_preparation::ScopeCompletion3D::One(validation),
+                )
+                .map_err(super::gpu_preparation::pbr_to_hdr);
+        }
+        if let Some(error) = pollster::block_on(validation) {
+            return Err((HdrError3D::Shader(error.to_string())).into());
         }
         let module_residency = reservation.commit_one();
         pipeline_residency.commit();
@@ -559,7 +595,7 @@ impl HdrOutput3D {
         height: u32,
         samples: u32,
         source: &HdrSource3D,
-    ) -> Result<Self, HdrError3D> {
+    ) -> super::gpu_preparation::HdrGpuResult3D<Self> {
         Self::new_with_presence(context, width, height, samples, source, None, 0)
     }
 
@@ -571,19 +607,31 @@ impl HdrOutput3D {
         source: &HdrSource3D,
         active: Option<Arc<TargetBudgetLease3D>>,
         private_bytes: u64,
-    ) -> Result<Self, HdrError3D> {
+    ) -> super::gpu_preparation::HdrGpuResult3D<Self> {
+        #[cfg(target_arch = "wasm32")]
+        let preparation = context.gpu_preparation.as_ref();
+        #[cfg(target_arch = "wasm32")]
+        if let Some(preparation) = preparation {
+            use super::gpu_preparation::{CandidateKey3D, CandidatePoll3D};
+            if let CandidatePoll3D::Ready(result) = preparation
+                .poll::<Result<Self, HdrError3D>>(context, CandidateKey3D::Hdr)
+                .map_err(super::gpu_preparation::pbr_to_hdr)?
+            {
+                return result.map_err(Into::into);
+            }
+        }
         source.exposure()?;
         if width == 0 || height == 0 || !matches!(samples, 1 | 4) {
-            return Err(HdrError3D::Target("inactive extent or invalid samples"));
+            return Err((HdrError3D::Target("inactive extent or invalid samples")).into());
         }
         let gpu = context.gpu_resources()?;
         let policy = context.limits().policy;
         if !gpu.private_hdr_owner_live() {
-            return Err(HdrError3D::Target("renderer retired"));
+            return Err((HdrError3D::Target("renderer retired")).into());
         }
         let dimension = width.max(height);
         if dimension > gpu.device.limits().max_texture_dimension_2d {
-            return Err(HdrError3D::Target("Device texture extent"));
+            return Err((HdrError3D::Target("Device texture extent")).into());
         }
         budget(
             PolicyBudget3D::TargetDimension2D,
@@ -605,9 +653,10 @@ impl HdrOutput3D {
                 .flags
                 .sample_count_supported(samples)
         {
-            return Err(HdrError3D::Target(
+            return Err((HdrError3D::Target(
                 "required FP16 attachment/sample-load/filterable Image or depth capability",
-            ));
+            ))
+            .into());
         }
         let pixels = u64::from(width) * u64::from(height);
         let scene_bytes = pixels
@@ -631,7 +680,7 @@ impl HdrOutput3D {
             .as_ref()
             .is_some_and(|a| !a.active_for(context, pixels))
         {
-            return Err(HdrError3D::Target("foreign HAL381 active-target credit"));
+            return Err((HdrError3D::Target("foreign HAL381 active-target credit")).into());
         }
         let full_charge =
             context.reserve_target_budget(if active.is_some() { 0 } else { pixels }, total)?;
@@ -640,7 +689,7 @@ impl HdrOutput3D {
         if uniform_bytes > gpu.device.limits().max_buffer_size
             || gpu.device.limits().max_uniform_buffer_binding_size < 16
         {
-            return Err(HdrError3D::Target("Tone16 Device buffer limits"));
+            return Err((HdrError3D::Target("Tone16 Device buffer limits")).into());
         }
         budget(
             PolicyBudget3D::DynamicStorageBytesPerTarget,
@@ -745,33 +794,50 @@ impl HdrOutput3D {
             PhysicalRect::new(0, 0, width, height),
             Box::new(final_charge),
         );
-        let validation = pollster::block_on(validation_scope.pop());
-        let allocation = pollster::block_on(allocation_scope.pop());
-        let pass = pass.map_err(HdrError3D::Target)?;
-        let result = Self {
-            pass: Some(pass),
-            active: Some(active),
-            gpu,
-            extent: (width, height),
-            samples,
-            #[cfg(any(test, feature = "test-harness"))]
-            timing: None,
-            work: Some(HdrWork3D {
-                scene,
-                depth: HdrDepth3D::Attachment {
-                    _texture: depth,
-                    view: depth_view,
-                    _charge: depth_charge,
-                },
-                uniform,
-                binding,
-                program,
-                _scene_charge: scene_charge,
-                _uniform_charge: uniform_charge,
-            }),
+        let validation = validation_scope.pop();
+        let allocation = allocation_scope.pop();
+        let build = || -> Result<Self, HdrError3D> {
+            let pass = pass.map_err(HdrError3D::Target)?;
+            let result = Self {
+                pass: Some(pass),
+                active: Some(active),
+                gpu,
+                extent: (width, height),
+                samples,
+                #[cfg(any(test, feature = "test-harness"))]
+                timing: None,
+                work: Some(HdrWork3D {
+                    scene,
+                    depth: HdrDepth3D::Attachment {
+                        _texture: depth,
+                        view: depth_view,
+                        _charge: depth_charge,
+                    },
+                    uniform,
+                    binding,
+                    program,
+                    _scene_charge: scene_charge,
+                    _uniform_charge: uniform_charge,
+                }),
+            };
+            Ok(result)
         };
+        #[cfg(target_arch = "wasm32")]
+        if let Some(preparation) = preparation {
+            return preparation
+                .defer(
+                    context,
+                    super::gpu_preparation::CandidateKey3D::Hdr,
+                    build(),
+                    super::gpu_preparation::ScopeCompletion3D::Pair(validation, allocation),
+                )
+                .map_err(super::gpu_preparation::pbr_to_hdr);
+        }
+        let validation = pollster::block_on(validation);
+        let allocation = pollster::block_on(allocation);
+        let result = build()?;
         if let Some(error) = validation.or(allocation) {
-            return Err(HdrError3D::Shader(error.to_string()));
+            return Err((HdrError3D::Shader(error.to_string())).into());
         }
         Ok(result)
     }

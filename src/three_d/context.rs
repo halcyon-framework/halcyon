@@ -1715,6 +1715,8 @@ struct Context3DCore {
 #[derive(Clone)]
 pub struct Context3D {
     core: Arc<Context3DCore>,
+    #[cfg(target_arch = "wasm32")]
+    pub(super) gpu_preparation: Option<Arc<super::gpu_preparation::GpuPreparation3D>>,
 }
 
 impl fmt::Debug for Context3D {
@@ -1732,6 +1734,11 @@ impl fmt::Debug for Context3D {
 }
 
 impl Context3D {
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn same_preparation_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.core, &other.core)
+    }
+
     pub fn new(gpu: GpuResources) -> Result<Self, Context3DError> {
         Self::new_with_domain_retention_limits(gpu, DomainRetentionLimits3D::conservative())
     }
@@ -1801,6 +1808,8 @@ impl Context3D {
         let binding = binding.admit();
         let resources = ResourceRegistry::new(id.clone(), limits, generation_ceiling);
         let context = Self {
+            #[cfg(target_arch = "wasm32")]
+            gpu_preparation: None,
             core: Arc::new(Context3DCore {
                 id,
                 binding,
@@ -2023,7 +2032,7 @@ impl Context3D {
 
     pub(super) fn direct_program(
         &self,
-    ) -> Result<Arc<super::raster::PbrProgram3D>, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<super::raster::PbrProgram3D>> {
         let mut cache = self
             .core
             .direct_program
@@ -2032,7 +2041,7 @@ impl Context3D {
         if let Some(program) = cache.upgrade() {
             return Ok(program);
         }
-        let program = Arc::new(super::raster::PbrProgram3D::new_family(self, true)?);
+        let program = super::raster::PbrProgram3D::new_family(self, true)?;
         *cache = Arc::downgrade(&program);
         Ok(program)
     }
@@ -2040,11 +2049,12 @@ impl Context3D {
     pub(super) fn indirect_program(
         &self,
         profile: super::indirect::Presence3D,
-    ) -> Result<Arc<super::raster::PbrProgram3D>, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<super::raster::PbrProgram3D>> {
         if profile.0 >= 8 || !profile.indirect() {
-            return Err(super::pbr::PbrError3D::Association(
+            return Err((super::pbr::PbrError3D::Association(
                 "invalid private E/G shader profile",
-            ));
+            ))
+            .into());
         }
         let mut cache = self
             .core
@@ -2054,18 +2064,16 @@ impl Context3D {
         if let Some(program) = cache[profile.0 as usize].upgrade() {
             return Ok(program);
         }
-        let program = Arc::new(super::raster::PbrProgram3D::new_profile(self, profile)?);
+        let program = super::raster::PbrProgram3D::new_profile(self, profile)?;
         cache[profile.0 as usize] = Arc::downgrade(&program);
         Ok(program)
     }
     pub(super) fn mip_program(
         &self,
         profile: super::indirect::Presence3D,
-    ) -> Result<Arc<super::raster::PbrProgram3D>, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<super::raster::PbrProgram3D>> {
         if profile.0 >= 8 {
-            return Err(super::pbr::PbrError3D::Association(
-                "invalid V2 D/E/G profile",
-            ));
+            return Err((super::pbr::PbrError3D::Association("invalid V2 D/E/G profile")).into());
         }
         let mut cache = self
             .core
@@ -2075,11 +2083,11 @@ impl Context3D {
         if let Some(p) = cache[profile.0 as usize].upgrade() {
             return Ok(p);
         }
-        let p = Arc::new(super::raster::PbrProgram3D::new_sampling_profile(
+        let p = super::raster::PbrProgram3D::new_sampling_profile(
             self,
             profile,
             super::mip_sampling::SamplingFamily3D::V2,
-        )?);
+        )?;
         cache[profile.0 as usize] = Arc::downgrade(&p);
         Ok(p)
     }
@@ -2088,11 +2096,11 @@ impl Context3D {
         &self,
         profile: super::indirect::Presence3D,
         sampling: super::mip_sampling::SamplingFamily3D,
-    ) -> Result<Arc<super::raster::PbrProgram3D>, super::pbr::PbrError3D> {
+    ) -> super::gpu_preparation::PbrGpuResult3D<Arc<super::raster::PbrProgram3D>> {
         if profile.0 >= 8 {
-            return Err(super::pbr::PbrError3D::Association(
-                "invalid reveal D/E/G profile",
-            ));
+            return Err(
+                (super::pbr::PbrError3D::Association("invalid reveal D/E/G profile")).into(),
+            );
         }
         let family = usize::from(sampling == super::mip_sampling::SamplingFamily3D::V2);
         let mut cache = self
@@ -2103,9 +2111,8 @@ impl Context3D {
         if let Some(program) = cache[family][profile.0 as usize].upgrade() {
             return Ok(program);
         }
-        let program = Arc::new(super::raster::PbrProgram3D::new_reveal_sampling_profile(
-            self, profile, sampling,
-        )?);
+        let program =
+            super::raster::PbrProgram3D::new_reveal_sampling_profile(self, profile, sampling)?;
         cache[family][profile.0 as usize] = Arc::downgrade(&program);
         Ok(program)
     }

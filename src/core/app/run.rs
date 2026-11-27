@@ -306,6 +306,13 @@ impl App {
         // Set up AppRoot with proper Screen infrastructure
         let mut gpu = renderer.gpu_resources();
         gpu.scale_factor = scale_factor;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let preparation_wake = event_loop_proxy.clone();
+            gpu.custom_render_preparation_wake = Some(Arc::new(move || {
+                let _ = preparation_wake.send_event(());
+            }));
+        }
         let mut app_context = AppContext::from_config(&self.config);
         app_context.ui_waker = Some(ui_waker);
         app_context.ui_scale = UiScaleState::initial(self.config.ui_scale);

@@ -15,6 +15,7 @@ pub(crate) mod indirect;
 pub(crate) mod mip_sampling;
 // Source math is not a public programmable-shader surface.
 mod geometry_cpu;
+mod gpu_preparation;
 mod loading_presence;
 mod material_api;
 #[cfg(test)]
