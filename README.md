@@ -1,35 +1,41 @@
-# Halcyon
+![Halcyon — sunrise over the city](docs/images/readme/halcyon-github-hero.webp)
 
-Halcyon is a GPU-first Rust UI framework for building native and browser
-applications with a retained widget tree. The starter runs one Screen on
-macOS and WebAssembly.
+### A retained-mode, GPU-accelerated UI framework for Rust.
 
-This is an experimental beta. Public APIs and integration requirements can
-change between releases. The getting-started route was tested with Rust and
-Cargo 1.100.0 on Apple Silicon macOS and in a Chromium-based browser at DPR 1
-for WebAssembly. Use native build tools, `cmake` on `PATH`, and Python 3.9 or
-later to serve the Web examples.
+Halcyon is designed for native and browser applications, from ordinary interfaces to complex, data-intensive workspaces. No high-end GPU is required for everyday UI.
 
-From the provided Halcyon source root, run Showcase:
+[Website](https://halcyon-framework.org/) · [Live Showcase](https://halcyon-framework.org/showcase) · [Documentation](docs/guide/index.md) · [crates.io](https://crates.io/crates/halcyon-rs)
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="33%">
+      <a href="docs/images/readme/showcase-inputs-and-controls.webp"><img src="docs/images/readme/showcase-inputs-and-controls.webp" width="240" alt="Inputs and Controls"></a><br>
+      <sub>Inputs and Controls</sub>
+    </td>
+    <td align="center" valign="top" width="33%">
+      <a href="docs/images/readme/showcase-tree-view.webp"><img src="docs/images/readme/showcase-tree-view.webp" width="240" alt="Tree View"></a><br>
+      <sub>Tree View</sub>
+    </td>
+    <td align="center" valign="top" width="33%">
+      <a href="docs/images/readme/showcase-property-editor.webp"><img src="docs/images/readme/showcase-property-editor.webp" width="240" alt="Property Editor"></a><br>
+      <sub>Property Editor</sub>
+    </td>
+  </tr>
+</table>
+
+Halcyon is currently an experimental beta. Public APIs and integration requirements can change between releases.
+
+## Getting started
+
+Run Showcase from the Halcyon source root:
 
 ```sh
 cargo run --locked -p halcyon-rs --example showcase
 ```
 
-Install the published 0.271.4-beta from your application's Cargo root.
+The published Rust package is [halcyon-rs](https://crates.io/crates/halcyon-rs), and the library is named `halcyon`. See crates.io for the current beta and installation command.
 
-```sh
-cargo add halcyon-rs@0.271.4-beta
-```
-
-The Rust library is named `halcyon`. This source checkout is the local
-`0.272.0-beta` release candidate.
-
-Import Halcyon's windowing types through `halcyon::winit`. Native callers
-can also use upstream `winit` pinned to `=0.30.12`. On WebAssembly, the
-published beta uses `halcyon-winit` 0.30.13; the source candidate uses the local,
-unpublished 0.30.14 helper.
-Upstream Winit has a separate type identity on WebAssembly.
+Import windowing types through `halcyon::winit` to use the framework's windowing dependency on both native and WebAssembly targets.
 
 - [Getting started](docs/guide/getting-started.md)
 - [Documentation index](docs/guide/index.md)
@@ -40,55 +46,34 @@ Upstream Winit has a separate type identity on WebAssembly.
 
 ## Platform support
 
-Halcyon has been developed and tested primarily on macOS, with Windows 10
-being the second most extensively tested platform.
+Halcyon has been developed and tested primarily on macOS, with Windows 10 being the second most extensively tested platform.
 
-Linux has received comparatively little testing so far. This is a known
-limitation of the current beta, and broader cross-platform testing and
-validation remain important areas for further development.
+Linux has received comparatively little testing so far. This is a known limitation of the current beta, and broader cross-platform testing and validation remain important areas for further development.
 
 ## Development history
 
-Halcyon has been in active development since November 2025. It was
-originally developed for my own use, with no plans for a public release.
-Its development priorities were driven by the needs of my own projects.
-The decision to make it open source came much later.
+Halcyon has been in active development since November 2025. It was originally developed for my own use, with no plans for a public release. Its development priorities were driven by the needs of my own projects. The decision to make it open source came much later.
 
-This repository marks the transition from private development to open
-source, rather than the beginning of the project. The original development
-history is preserved privately because it includes internal engineering
-material and development infrastructure not intended for public distribution.
+This repository marks the transition from private development to open source, rather than the beginning of the project. The original development history is preserved privately because it includes internal engineering material and development infrastructure not intended for public distribution.
 
-See [HISTORY.md](HISTORY.md) for the chronological record of development
-before the public release.
+See [HISTORY.md](HISTORY.md) for the chronological record of development before the public release.
 
 ## Participation
 
-Halcyon is developed and maintained by its founder,
-[Andrey Gubarev](https://github.com/agubarev), with extensive AI assistance.
-It has one human maintainer. Architectural decisions and responsibility for
-the official implementation remain with the founder.
+Halcyon is developed and maintained by its founder, [Andrey Gubarev](https://github.com/agubarev), with extensive AI assistance. It has one human maintainer. Architectural decisions and responsibility for the official implementation remain with the founder.
 
-Bug reports, reproducible examples, technical questions, criticism, and
-proposals are welcome through Issues. External pull requests are not
-accepted, and there is no scheduled date for changing this policy.
+Bug reports, reproducible examples, technical questions, criticism, and proposals are welcome through Issues. External pull requests are not accepted, and there is no scheduled date for changing this policy.
 
-Read the [FAQ](docs/guide/faq.md) for the development model, participation
-rules, licensing status, and verified project boundaries.
+Read the [FAQ](docs/guide/faq.md) for the development model, participation rules, licensing status, and verified project boundaries.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for participation rules and
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community conduct.
-For vulnerability reporting, see [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for participation rules and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community conduct. For vulnerability reporting, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-Halcyon is licensed under the [MIT License](LICENSE). Bundled third-party
-code and assets retain their own licenses; see [Third-party notices](docs/THIRD-PARTY-NOTICES.md).
+Halcyon is licensed under the [MIT License](LICENSE). Bundled third-party code and assets retain their own licenses; see [Third-party notices](docs/THIRD-PARTY-NOTICES.md).
 
 ## Support Halcyon
 
-If you would like to support the ongoing development and maintenance of
-Halcyon, you can do so through [GitHub Sponsors](https://github.com/sponsors/agubarev).
+If you would like to support the ongoing development and maintenance of Halcyon, you can do so through [GitHub Sponsors](https://github.com/sponsors/agubarev).
 
-Sponsorship is voluntary and does not confer influence over project decisions,
-priority support, or a commitment to deliver particular features.
+Sponsorship is voluntary and does not confer influence over project decisions, priority support, or a commitment to deliver particular features.
