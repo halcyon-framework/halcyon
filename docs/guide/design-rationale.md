@@ -11,6 +11,8 @@ governing-specs:
   - SPEC-HAL-002A
   - SPEC-HAL-010
   - SPEC-HAL-018
+  - SPEC-HAL-087
+  - SPEC-HAL-154
   - SPEC-HAL-266A
   - SPEC-HAL-295
   - SPEC-HAL-295A
@@ -507,6 +509,78 @@ The value of the architecture must ultimately be demonstrated by usable
 applications and reliable observed behavior. A well-written specification
 does not substitute for either.
 
+## 15. Why does widget replacement appear in composition examples?
+
+Widget replacement and initial widget construction are distinct
+operations, although Halcyon's early development led to the same
+mechanism being used for both.
+
+WidgetTree owns widget instances and their structural relationships.
+A composite such as a child-backed Button needs to identify its caption
+node. With an API that takes a child's NodeId in the parent's constructor,
+the child must already exist. But installing that child beneath its
+intended parent requires the parent's NodeId first. This is an ordering
+dependency in construction, not a cycle of ownership.
+
+In the first implementations, the logical children of a composite did
+not always correspond to its actual children in the tree. This became
+a concrete problem when event routing and hit-testing were introduced:
+the structure used to locate and route input had to agree with the
+structure used to lay out and present the interface.
+
+The practical solution was to install a temporary parent, add the
+intended children beneath it, and then replace the temporary widget
+with the actual composite. The parent node and its links were retained.
+The replace_widget! macro later encapsulated that pattern.
+
+Initially, the pattern used take/restore operations developed to allow
+recursive layout under Rust's borrowing rules. Returning the same
+extracted widget is a different operation from installing another
+widget at that location. Halcyon later separated the operations, in
+part because layout owns geometry assignment and construction must not
+acquire that authority through replacement.
+
+The existing replacement operation, WidgetTree::replace_widget_only,
+has a legitimate purpose beyond construction convenience. It can
+substitute a different concrete widget at an existing registered node,
+subject to the applicable structural and lifecycle contracts. The
+registered TreeWidgetId is retained, but the former concrete mount is
+retired and the successor receives a new concrete mount. Keeping the
+node's identity does not mean keeping the old object's state or
+lifetime. A temporary layout extraction and restoration of the same
+object does not constitute such a replacement.
+
+Not every composite requires a placeholder. A Flex can be constructed
+before its ordinary children are added, because it uses the actual tree
+child collection rather than requiring their identities in its
+constructor. For composites with required structural references,
+[HAL-154](../specs/SPEC-HAL-154-Sealed-After-Layout-Deferred-Wiring-Contract.md)
+defines a different approach: explicitly deferred wiring completed
+after the necessary nodes exist, with single-assignment and a
+first-layout sealing boundary. Reading an unwired required reference,
+entering stable operation with incomplete wiring, and changing a
+sealed structural reference are forbidden. This is not permission to
+discover a substitute child during layout or to repair an invalid live
+relationship.
+
+The placeholder-based construction idiom is a historical solution to a
+real ordering problem, not a requirement of the Rust language or a
+necessary feature of every retained-mode composition. Genuine
+replacement remains useful in its own right. Improving the construction
+interface is a separate concern: it need not change replacement's
+meaning, duplicate widget ownership, or introduce new lifecycle
+machinery simply to remove a few lines of construction code.
+
+This explains the existing design and its trade-offs. It does not
+announce a new construction API, prescribe migration to a particular
+mechanism, or claim that every existing composite conforms to the
+deferred wiring contract.
+
+See [HAL-002](../specs/SPEC-HAL-002-Constitution-and-Architectural-Invariants.md),
+[HAL-087](../specs/SPEC-HAL-087-Widget-Identity-Model.md),
+[HAL-154](../specs/SPEC-HAL-154-Sealed-After-Layout-Deferred-Wiring-Contract.md),
+and [HAL-354](../specs/SPEC-HAL-354-Retained-Value-Updates-and-Scene-Fragments.md).
+
 ## Reading further
 
 - [Getting started](getting-started.md): build and run an application.
@@ -526,6 +600,18 @@ wording prepared on 2026-11-24. The prepared 0.270.3-beta source candidate
 also contains a subsequent narrow font-loading correction; this rationale
 does not requalify that implementation or advance other guide pins.
 
+The explanation of widget composition and replacement in section 15 was
+added on 2026-11-28. It draws on a historical source review and the
+existing source revision named in the metadata. At that
+revision, examples/showcase/tab_overlays.rs:549-565 demonstrates the
+construction idiom, src/core/widget_tree.rs:3896-3961 describes the
+layout take/restore path, and src/core/widget_tree.rs:3963-4006 implements
+the retained-node replacement and concrete-mount transition.
+src/utils/macros.rs delegates to that operation. HAL-087 and HAL-154
+at the same revision explain the respective identity and deferred wiring
+contracts. This is source inspection and historical rationale, not an
+executed conformance test or a re-verification of the other sections.
+
 The sections describe requirements, motivations, and trade-offs, not a new
 implementation audit. Under HAL-309, authority and implementation status
 remain separate:
@@ -537,6 +623,7 @@ remain separate:
 | AI-assisted development and future model capabilities | Maintainer's stated development direction, 2026-11-24; HAL-309 §§1 and 9; FAQ | Engineering approach and aspiration; not a runtime AI requirement |
 | Retention, identity, phases, data ownership, GPU-first model, and sovereignty | Binding constitutional invariants, HAL-002; HAL-001 Foundational; HAL-354 Binding | Requirements explained; current full conformance not established here |
 | Widget composition | HAL-010 Draft, subject to HAL-002 | Intent explained, not adoption of Draft clauses |
+| Widget replacement and structural wiring | HAL-087 Stage 4 Implemented (Complete), HAL-154 Binding, HAL-354 Binding, subject to their stated scopes; historical development review and revision-qualified source in section 15 and Sources and scope | Replacement and construction idiom observed in source; deferred wiring contract explained; historical rationale and no claim of universal conformance or a newly adopted construction API |
 | Custom-render extension | HAL-295 Implemented / Closed; HAL-295A and HAL-266A Adopted / Binding, subject to their stated scope | Existing qualified extension contract; no new implementation or platform-parity claim |
 | Architectural evolution | Binding constitutional amendment process, HAL-002A | not-applicable to process explanation |
 | Recurring failure classes | PM-000 Active / Foundational; PM-001 and PM-027 Active | Historical findings; no claim of exhaustive remediation |
